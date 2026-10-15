@@ -6,6 +6,7 @@ import type {
   Product,
   Sku,
 } from "@/lib/types/catalog";
+import type { CustomerAddress } from "@/lib/types/customer";
 import type { Role, TokenResponse, User } from "@/lib/types/auth";
 
 /** Where the client points in tests (see `vitest.config.ts` → `test.env`). */
@@ -103,6 +104,21 @@ export const skuFixture: Sku = {
   is_active: true,
   created_at: "2026-10-15T18:23:20.200000Z",
   updated_at: "2026-10-15T18:23:20.200000Z",
+};
+
+export const customerAddressFixture: CustomerAddress = {
+  id: "b7c1d2e3-4f5a-4b6c-8d9e-0f1a2b3c4d5e",
+  user_id: adminUser.id,
+  label: "Home",
+  recipient_name: "Admin User",
+  phone: "+15550001",
+  country: "US",
+  city: "Boston",
+  address_line1: "1 Beacon St",
+  postal_code: "02108",
+  is_default: true,
+  created_at: "2026-10-15T18:23:20.300000Z",
+  updated_at: "2026-10-15T18:23:20.300000Z",
 };
 
 export function pageOf<T>(items: T[], overrides: Partial<PaginatedPayload<T>> = {}) {

@@ -262,7 +262,7 @@ slices; nothing in the auth/RBAC path depends on them.
 The screens added after the first audit (`/admin/users`, `/admin/roles`) were checked the same way:
 against the running backend, never against fixtures.
 
-`pnpm smoke` now walks the whole account lifecycle headless (**62 checks, all passing** since §10
+`pnpm smoke` now walks the whole account lifecycle headless (**85 checks, all passing** since §10–§11
 extended it to the catalog):
 
 | Check | Live result |
@@ -293,14 +293,15 @@ its groups from `lib/permissions.ts`, which mirrors the backend registry and is 
 
 | Layer | Command | Needs a backend? | Runs in this sandbox? |
 | --- | --- | --- | --- |
-| Unit / integration (MSW, exact live shapes) | `pnpm test` | no | yes — 13 files / 66 tests |
-| Headless contract + lifecycle | `pnpm smoke` | yes | yes — 62 checks |
-| Browser end-to-end (`e2e/*.spec.ts`, 10 specs in 3 files) | `pnpm test:e2e` | yes | **no** |
+| Unit / integration (MSW, exact live shapes) | `pnpm test` | no | yes — 18 files / 87 tests |
+| Headless contract + lifecycle | `pnpm smoke` | yes | yes — 85 checks |
+| Browser end-to-end (`e2e/*.spec.ts`, 13 specs in 4 files) | `pnpm test:e2e` | yes | **no** |
 
 The Playwright specs cover the redirect for anonymous visitors, the wrong-credentials message, sign-in,
 session restore after a reload (exercises the silent `POST /api/auth/refresh`), sign-out, the
 create → activate → assign-role → delete lifecycle *through the UI*, and the catalog lifecycle
-(category → product → SKU → the publish-gate checklist → archive → delete). They are type-checked, linted and
+(category → product → SKU → the publish-gate checklist → archive → delete) and the customer flows
+(register → sign in → profile → address book → password recovery). They are type-checked, linted and
 `--list`-verified here, but `pnpm exec playwright install chromium` needs `cdn.playwright.dev`, which this
 sandbox blocks — run them on a machine with browser downloads enabled. `pnpm smoke` is the same
 endpoints without a browser, which is why it was extended instead of waiting for one.
@@ -405,3 +406,65 @@ as documented in §3 and §6. One detail worth repeating because the catalog sho
 **domain** `422` arrives inside the envelope with `payload.details.field`, while a **request-shape**
 `422` (FastAPI/Pydantic, e.g. `quantity_delta: 0`) arrives as `{detail:[…]}` — `lib/api-error.ts`
 normalises both into `fieldErrors`, which the catalog dialogs render inline.
+
+---
+
+## 11. Addendum — the customer-account slice, probed on the live server
+
+Registration, profile, password recovery and the address book were probed the same way as the rest:
+against the running backend, with the probe creating and deleting its own accounts. `pnpm smoke` now
+walks the whole lifecycle headless (85 checks) so drift fails a command instead of a review.
+
+### Registration is *not* the admin endpoint
+
+| | `POST /api/users/` (admin) | `POST /api/auth/register` (customer) |
+| --- | --- | --- |
+| Auth | `users:create` | none |
+| Status | `200` | `200` |
+| Account state | **inactive** (`is_active: false`) → sign-in answers `401 INACTIVE_USER` | **active** (`is_active: true`) |
+| Token issued | no | no — the customer signs in afterwards |
+| Roles | as assigned | none (`roles: []`), so **zero permissions** |
+
+Both answer `409 CONFLICT` for a duplicate email or username, naming the value in the message
+(`User with email 'x@example.com' already exists`), and both refuse unknown fields with a FastAPI
+`422` (`extra="forbid"`). A password shorter than 8 characters is the entity's rule and arrives
+enveloped: `422` `payload.details.field = "password"`, *"Password must be at least 8 characters long"*.
+
+The consequence for the UI: a freshly registered customer has **no permissions at all**, so anything
+gated behind `PermissionGate` locks them out. `/account` therefore requires a session and nothing
+else, and the account page says out loud that an administrator has to grant roles.
+
+### Profile, recovery and the address book
+
+| Call | Live result |
+| --- | --- |
+| `GET /api/auth/me` (customer token) | `200`, the same `User` DTO the admin endpoints return |
+| `PUT /api/auth/me {}` | `422` `field=profile` — *"At least one profile field is required"* |
+| `PUT /api/auth/me {"first_name":…}` | `200`; omitted fields preserved |
+| `PUT /api/auth/me {"email":…}` | `422` FastAPI (`extra_forbidden`) — the email is immutable |
+| `PUT /api/auth/me {"username":"admin"}` | `409 CONFLICT` |
+| `POST /api/auth/recovery/request` (known email) | `200` `{accepted:true, reset_token:"<raw>", expires_at:"…+1h"}` |
+| `POST /api/auth/recovery/request` (unknown email) | `200` `{accepted:true, reset_token:null}` — no enumeration |
+| `POST /api/auth/recovery/reset` (bad / used / expired token) | `401 CREDENTIALS_VALIDATION_ERROR` |
+| `POST /api/auth/recovery/reset` (weak password) | `422` `field=password` (entity rule, before the token is used) |
+| `POST /api/auth/recovery/reset` (valid) | `200` `payload: null`; the token is single-use, the old password stops working immediately |
+| `GET /api/me/addresses/?page=1&size=10` | `200`, `{items,total,page,size,pages}` — session-scoped, no permission |
+| `GET /api/me/addresses/?size=101` / `?page=0` | `422` FastAPI (`fastapi_pagination` bounds `size` to 100 and `page` to ≥1) |
+| `POST /api/me/addresses/` | `200`; the **first** address is forced to `is_default: true`, a later one keeps what you send |
+| `POST /api/me/addresses/` with a blank field | `422` FastAPI (`value_error`, `loc: ["body","label"]`) — DTO validators, not the envelope |
+| `PUT /api/me/addresses/{id}` | partial: omitted fields preserved (`{"city":…}` kept the label) |
+| `PUT /api/me/addresses/{id} {"is_default":true}` | clears the flag on the other addresses — exactly one default afterwards |
+| `PUT /api/me/addresses/{id} {"is_default":false}` | allowed, and can leave the customer with **no** default address |
+| `GET/PUT/DELETE /api/me/addresses/{id}` for *another* customer | `404 RESOURCE_NOT_FOUND` (not `403`) — the row simply "does not exist" for them |
+
+Two of those shape the client code: a partial `PUT` is the only sane way to edit an address (blank
+strings would be rejected), and `/account` cannot be an email-change screen — the API does not accept
+one.
+
+### The reset token comes back in the response
+
+`POST /api/auth/recovery/request` returns the **raw** token for a known account, because there is no
+outbound email yet (backend follow-up #11). The recovery screen therefore shows the token, says why,
+and offers to continue to `/reset-password?token=…`. Everything about it is single-use and expires in
+an hour, and the endpoint answers identically for unknown emails — so the *endpoint* is fine; the
+delivery mechanism is the temporary part.

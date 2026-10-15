@@ -666,6 +666,300 @@ async function main() {
     fail("cleanup DELETE the smoke category", `got ${categoryRemoved.status}`);
   }
 
+  // 5d. Customer account — register, profile, password recovery and the address book.
+  //
+  // All of it runs through `/api/me/*` and `/api/auth/*` with a *customer* token (zero permissions,
+  // no roles), which is the point: these endpoints are session-scoped, not permission-scoped.
+  const customerSuffix = `${suffix}-cust`;
+  const customerEmail = `${customerSuffix}@example.com`;
+  const customerUsername = customerSuffix;
+  const customerUserIds = [];
+
+  const registered = await request("/api/auth/register", {
+    method: "POST",
+    body: {
+      first_name: "Smoke",
+      last_name: "Customer",
+      email: customerEmail,
+      username: customerUsername,
+      password: "Secret123",
+    },
+  });
+  const registeredCustomer = registered.json?.payload;
+  expect(
+    registered.status === 200 && registeredCustomer?.is_active === true,
+    "POST /api/auth/register → 200, account active immediately",
+    `got ${registered.status} / is_active=${registeredCustomer?.is_active}`,
+  );
+  if (registeredCustomer?.id) customerUserIds.push(registeredCustomer.id);
+
+  const duplicateEmail = await request("/api/auth/register", {
+    method: "POST",
+    body: {
+      first_name: "Smoke",
+      last_name: "Customer",
+      email: customerEmail,
+      username: `${customerUsername}-2`,
+      password: "Secret123",
+    },
+  });
+  expect(
+    duplicateEmail.status === 409 && duplicateEmail.json?.payload?.error_code === "CONFLICT",
+    "  duplicate email → 409 CONFLICT (the message names the value)",
+    `got ${duplicateEmail.status}`,
+  );
+
+  const shortPassword = await request("/api/auth/register", {
+    method: "POST",
+    body: {
+      first_name: "Smoke",
+      last_name: "Customer",
+      email: `short-${customerSuffix}@example.com`,
+      username: `${customerUsername}-3`,
+      password: "short",
+    },
+  });
+  expect(
+    shortPassword.status === 422 && shortPassword.json?.payload?.details?.field === "password",
+    "  password shorter than 8 characters → 422 field=password",
+    `got ${shortPassword.status}`,
+  );
+
+  const customerLogin = await request("/api/auth/login", {
+    method: "POST",
+    body: { username: customerUsername, password: "Secret123" },
+  });
+  const customerToken = customerLogin.json?.payload?.token;
+  expect(
+    customerLogin.status === 200 && Boolean(customerToken),
+    "  the fresh customer can sign in (the admin endpoint's account would still be inactive)",
+    `got ${customerLogin.status}`,
+  );
+  expect(
+    (customerLogin.json?.payload?.permissions ?? []).length === 0,
+    "  a self-registered account carries no permissions",
+    `${customerLogin.json?.payload?.permissions?.length ?? 0} permissions`,
+  );
+
+  const emptyProfile = await request("/api/auth/me", { method: "PUT", token: customerToken, body: {} });
+  expect(
+    emptyProfile.status === 422 && emptyProfile.json?.payload?.details?.field === "profile",
+    "PUT /api/auth/me {} → 422 field=profile (the API refuses an empty update)",
+    `got ${emptyProfile.status}`,
+  );
+
+  const renamedProfile = await request("/api/auth/me", {
+    method: "PUT",
+    token: customerToken,
+    body: { first_name: "Renamed" },
+  });
+  expect(
+    renamedProfile.status === 200 &&
+      renamedProfile.json?.payload?.first_name === "Renamed" &&
+      renamedProfile.json?.payload?.username === customerUsername,
+    "PUT /api/auth/me {first_name} → 200, other fields preserved",
+    `got ${renamedProfile.status}`,
+  );
+
+  const recovery = await request("/api/auth/recovery/request", {
+    method: "POST",
+    body: { email: customerEmail },
+  });
+  const resetToken = recovery.json?.payload?.reset_token;
+  expect(
+    recovery.status === 200 && recovery.json?.payload?.accepted === true && Boolean(resetToken),
+    "POST /api/auth/recovery/request → 200 with a reset token",
+    `got ${recovery.status}`,
+  );
+
+  const unknownRecovery = await request("/api/auth/recovery/request", {
+    method: "POST",
+    body: { email: `nobody-${customerSuffix}@example.com` },
+  });
+  expect(
+    unknownRecovery.status === 200 &&
+      unknownRecovery.json?.payload?.accepted === true &&
+      unknownRecovery.json?.payload?.reset_token === null,
+    "  an unknown email is answered identically but without a token (no enumeration)",
+    `got ${unknownRecovery.status}`,
+  );
+
+  const badToken = await request("/api/auth/recovery/reset", {
+    method: "POST",
+    body: { token: "not-a-token", new_password: "NewSecret1" },
+  });
+  expect(
+    badToken.status === 401 && badToken.json?.payload?.error_code === "CREDENTIALS_VALIDATION_ERROR",
+    "POST /api/auth/recovery/reset (bad token) → 401",
+    `got ${badToken.status}`,
+  );
+
+  const reset = await request("/api/auth/recovery/reset", {
+    method: "POST",
+    body: { token: resetToken, new_password: "NewSecret1" },
+  });
+  expect(reset.status === 200, "POST /api/auth/recovery/reset → 200 (payload null)", `got ${reset.status}`);
+
+  const replayed = await request("/api/auth/recovery/reset", {
+    method: "POST",
+    body: { token: resetToken, new_password: "NewSecret1" },
+  });
+  expect(replayed.status === 401, "  the same token cannot be replayed", `got ${replayed.status}`);
+
+  const oldPassword = await request("/api/auth/login", {
+    method: "POST",
+    body: { username: customerUsername, password: "Secret123" },
+  });
+  expect(oldPassword.status === 401, "  the old password stops working", `got ${oldPassword.status}`);
+
+  const newPassword = await request("/api/auth/login", {
+    method: "POST",
+    body: { username: customerUsername, password: "NewSecret1" },
+  });
+  const newCustomerToken = newPassword.json?.payload?.token;
+  expect(
+    newPassword.status === 200 && Boolean(newCustomerToken),
+    "  the new password works",
+    `got ${newPassword.status}`,
+  );
+
+  const address = {
+    label: "Home",
+    recipient_name: "Smoke Customer",
+    phone: "+15550001",
+    country: "US",
+    city: "Boston",
+    address_line1: "1 Beacon St",
+    postal_code: "02108",
+  };
+
+  const firstAddress = await request("/api/me/addresses/", {
+    method: "POST",
+    token: newCustomerToken,
+    body: address,
+  });
+  const firstAddressId = firstAddress.json?.payload?.id;
+  expect(
+    firstAddress.status === 200 && firstAddress.json?.payload?.is_default === true,
+    "POST /api/me/addresses/ → 200 and the first address is forced default",
+    `got ${firstAddress.status} / is_default=${firstAddress.json?.payload?.is_default}`,
+  );
+
+  const secondAddress = await request("/api/me/addresses/", {
+    method: "POST",
+    token: newCustomerToken,
+    body: { ...address, label: "Office", is_default: false },
+  });
+  const secondAddressId = secondAddress.json?.payload?.id;
+  expect(
+    secondAddress.status === 200 && secondAddress.json?.payload?.is_default === false,
+    "  a second address keeps is_default false",
+    `got ${secondAddress.status}`,
+  );
+
+  const blankLabel = await request("/api/me/addresses/", {
+    method: "POST",
+    token: newCustomerToken,
+    body: { ...address, label: "   " },
+  });
+  expect(
+    blankLabel.status === 422 && Array.isArray(blankLabel.json?.detail),
+    "  a blank label → FastAPI 422 (the DTO validator, not the envelope)",
+    `got ${blankLabel.status}`,
+  );
+
+  const addressPage = await request("/api/me/addresses/?page=1&size=10", { token: newCustomerToken });
+  expect(
+    addressPage.status === 200 &&
+      addressPage.json?.payload?.total === 2 &&
+      Array.isArray(addressPage.json?.payload?.items),
+    "GET /api/me/addresses/?page=1&size=10 → 200 paginated",
+    `got ${addressPage.status} / total=${addressPage.json?.payload?.total}`,
+  );
+
+  const oversized = await request("/api/me/addresses/?page=1&size=101", { token: newCustomerToken });
+  expect(
+    oversized.status === 422 && Array.isArray(oversized.json?.detail),
+    "  size=101 → FastAPI 422 (fastapi_pagination bounds size to 100)",
+    `got ${oversized.status}`,
+  );
+
+  const renamedAddress = await request(`/api/me/addresses/${secondAddressId}`, {
+    method: "PUT",
+    token: newCustomerToken,
+    body: { city: "Cambridge" },
+  });
+  expect(
+    renamedAddress.status === 200 &&
+      renamedAddress.json?.payload?.city === "Cambridge" &&
+      renamedAddress.json?.payload?.label === "Office",
+    "PUT /api/me/addresses/{id} → partial update keeps the other fields",
+    `got ${renamedAddress.status}`,
+  );
+
+  const promoted = await request(`/api/me/addresses/${secondAddressId}`, {
+    method: "PUT",
+    token: newCustomerToken,
+    body: { is_default: true },
+  });
+  const afterPromotion = await request("/api/me/addresses/?page=1&size=10", { token: newCustomerToken });
+  const defaults = (afterPromotion.json?.payload?.items ?? []).filter((item) => item.is_default);
+  expect(
+    promoted.status === 200 && defaults.length === 1 && defaults[0].id === secondAddressId,
+    "  is_default:true clears the flag on the other addresses",
+    `${defaults.length} default(s)`,
+  );
+
+  // Cross-account isolation: the same address answers 404 for a different customer.
+  const otherCustomer = await request("/api/auth/register", {
+    method: "POST",
+    body: {
+      first_name: "Other",
+      last_name: "Customer",
+      email: `other-${customerSuffix}@example.com`,
+      username: `other-${customerUsername}`,
+      password: "Secret123",
+    },
+  });
+  if (otherCustomer.json?.payload?.id) customerUserIds.push(otherCustomer.json.payload.id);
+  const otherLogin = await request("/api/auth/login", {
+    method: "POST",
+    body: { username: `other-${customerUsername}`, password: "Secret123" },
+  });
+  const otherToken = otherLogin.json?.payload?.token;
+  const foreignRead = await request(`/api/me/addresses/${firstAddressId}`, { token: otherToken });
+  const foreignDelete = await request(`/api/me/addresses/${firstAddressId}`, {
+    method: "DELETE",
+    token: otherToken,
+  });
+  expect(
+    foreignRead.status === 404 && foreignDelete.status === 404,
+    "  another customer's address answers 404 for GET and DELETE",
+    `got ${foreignRead.status} / ${foreignDelete.status}`,
+  );
+
+  const deletedFirst = await request(`/api/me/addresses/${firstAddressId}`, {
+    method: "DELETE",
+    token: newCustomerToken,
+  });
+  const deletedSecond = await request(`/api/me/addresses/${secondAddressId}`, {
+    method: "DELETE",
+    token: newCustomerToken,
+  });
+  const emptied = await request("/api/me/addresses/?page=1&size=10", { token: newCustomerToken });
+  expect(
+    deletedFirst.status === 200 && deletedSecond.status === 200 && emptied.json?.payload?.total === 0,
+    "DELETE /api/me/addresses/{id} → 200, book emptied",
+    `got ${deletedFirst.status} / ${deletedSecond.status} / total=${emptied.json?.payload?.total}`,
+  );
+
+  for (const userId of customerUserIds) {
+    const removed = await request(`/api/users/${userId}`, { method: "DELETE", token });
+    if (removed.status !== 200 && removed.status !== 204) {
+      fail("cleanup DELETE the smoke customer", `got ${removed.status}`);
+    }
+  }
+
   // 6. Unauthenticated access must stay a 401 envelope (this is what triggers a silent refresh).
   const anonymous = await request("/api/auth/me");
   expect(

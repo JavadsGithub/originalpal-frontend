@@ -95,7 +95,7 @@ In short:
 | `pnpm permissions:sync -- --from ../originalpal-server-python/statics/permissions.json` | refresh the snapshot from the backend, then regenerate |
 | `pnpm permissions:check` | fail if the generated registry is stale (CI gate) |
 | `pnpm api:generate` | orval client generation from `OPENAPI_JSON_URL` (output in git-ignored `lib/api`) |
-| `pnpm smoke` | end-to-end contract check through the proxy against the live backend: auth lifecycle, RBAC, pagination, and the catalog (upload → product → SKU → publish gates → archive) |
+| `pnpm smoke` | end-to-end contract check through the proxy against the live backend: auth lifecycle, RBAC, pagination, the catalog (upload → product → SKU → publish gates → archive) and the customer account (register → profile → password recovery → address book) |
 
 ## Testing
 
@@ -103,8 +103,8 @@ Three layers, from fastest to most convincing:
 
 | Layer | Command | What it proves |
 | --- | --- | --- |
-| Unit / integration | `pnpm test` | the client layer against MSW replicas of live responses: envelope unwrapping, 401→refresh→replay, 422 normalisation, permission gates, table behaviour |
-| Headless contract | `pnpm smoke` | the real stack — browser-facing contract → `/api/*` proxy → FastAPI. Walks the account lifecycle (create inactive → activate → assign role → delete) and the catalog lifecycle (upload → category/attribute links → product → SKU → the three publish gates → archive), cleaning up after itself |
+| Unit / integration | `pnpm test` | the client layer against MSW replicas of live responses: envelope unwrapping, 401→refresh→replay, 422 normalisation, permission gates, table behaviour, the customer rules |
+| Headless contract | `pnpm smoke` | the real stack — browser-facing contract → `/api/*` proxy → FastAPI. Walks the admin account lifecycle (create inactive → activate → assign role → delete), the catalog lifecycle (upload → category/attribute links → product → SKU → the three publish gates → archive) and the customer lifecycle (register → profile → recovery → addresses), cleaning up after itself |
 | Browser end-to-end | `pnpm test:e2e` | the same flows *through the UI*, including session restore after a reload |
 
 `pnpm test:e2e` needs a browser: `pnpm exec playwright install chromium`, a running backend with seed
@@ -149,6 +149,30 @@ All of it is probed live and written up in
 * There is no public URL for an uploaded file: images are served through
   `GET /api/files/{id}/download` (`uploads:download`), so previews need that permission.
 
+## Customer account
+
+The storefront-facing half of the account model (audit §11):
+
+| Screen | Endpoints | Gate |
+| --- | --- | --- |
+| `/register` | `POST /api/auth/register` | public — the account is **active immediately** (unlike `POST /api/users/`) and no token is issued, so the flow ends on `/login?registered=1` |
+| `/account` | `GET /api/auth/me`, `PUT /api/auth/me` | session only — a self-registered account has **zero permissions**, so nothing here may be permission-gated |
+| `/account/addresses` | `GET/POST /api/me/addresses/`, `PUT/DELETE /api/me/addresses/{id}` | session only; another customer's address answers `404` |
+| `/forgot-password` | `POST /api/auth/recovery/request` | public — the API answers `accepted: true` whether or not the email exists |
+| `/reset-password?token=…` | `POST /api/auth/recovery/reset` | public — single-use token, one hour, and the old password stops working |
+
+Three behaviours worth knowing before touching it:
+
+* **Registration ≠ the admin endpoint.** `POST /api/auth/register` creates an *active* account with no
+  roles; `POST /api/users/` creates an *inactive* one for an admin to activate.
+* **The reset token comes back in the response.** The backend has no outbound email yet, so
+  `POST /api/auth/recovery/request` returns the raw token for a known account. The screen shows it and
+  says why; backend follow-up **#11** proposes the notifier port that removes the leak while keeping this
+  flow working locally.
+* **The profile is partial and email-free.** `PUT /api/auth/me` accepts `first_name`, `last_name`,
+  `username`, refuses an empty body (`422 field=profile`) and refuses `email` outright (unknown field),
+  so the form renders the email as read-only.
+
 ## Roadmap
 
 The backend exposes 114 operations; the frontend consumes auth, users, roles and the catalog back
@@ -157,5 +181,5 @@ office. Next slices, in the order the audit suggests:
 1. ~~Admin back-office: users + roles + permission pickers~~ — done (§9 of the audit).
 2. ~~Catalog management: products, SKUs, categories, attributes, brands (+ uploads for images)~~ — done
    (§10 of the audit).
-3. Storefront: public catalog, homepage blocks, cart, checkout, orders, customer addresses.
-4. Customer account: register, profile update, password recovery.
+3. ~~Customer account: register, profile update, password recovery~~ — done (§11 of the audit).
+4. Storefront: public catalog, homepage blocks, cart, checkout, orders.

@@ -20,6 +20,16 @@ export default function LoginForm({ onSuccessRedirect }: LoginFormProps) {
   // `?redirect=` is set by AuthGuard; default to the back office overview.
   const redirectUrl = onSuccessRedirect || searchParams.get("redirect") || "/admin";
 
+  /**
+   * The customer flows end here, so the notice is derived from the query string the injector that
+   * sent them over appended (`?registered=1` after self-registration, `?reset=1` after a reset).
+   */
+  const notice = searchParams.get("registered")
+    ? "Account created. Sign in with the password you just chose."
+    : searchParams.get("reset")
+      ? "Password updated. Sign in with your new password."
+      : null;
+
   const handleSubmit = async (credentials: { username: string; password: string }) => {
     setIsLoading(true);
     setErrorMessage(null);
@@ -39,6 +49,7 @@ export default function LoginForm({ onSuccessRedirect }: LoginFormProps) {
     <LoginFormUI
       isLoading={isLoading}
       errorMessage={errorMessage}
+      notice={notice}
       callbacks={{
         onSubmit: handleSubmit,
       }}

@@ -23,6 +23,23 @@ export const roleKeys = {
   detail: (id: string) => [...roleKeys.all, "detail", id] as const,
 };
 
+/**
+ * Customer-account keys.
+ *
+ * The profile itself lives under `authKeys.me()` (the auth provider owns that cache entry); these
+ * keys cover the address book, which is the customer's only other collection.
+ */
+export const customerKeys = {
+  all: ["customer"] as const,
+
+  addresses: {
+    all: () => [...customerKeys.all, "addresses"] as const,
+    list: (params: { page: number; size: number }) =>
+      [...customerKeys.addresses.all(), "list", params] as const,
+    detail: (id: string) => [...customerKeys.addresses.all(), "detail", id] as const,
+  },
+};
+
 export const systemKeys = {
   all: ["system"] as const,
   backendHealth: () => [...systemKeys.all, "backend-health"] as const,

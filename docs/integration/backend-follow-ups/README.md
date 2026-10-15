@@ -20,6 +20,7 @@ These are the fixes that remove workarounds and pre-empt bugs on the backend sid
 | 8 | Order-by-id endpoints are unauthenticated | medium (security review) | guest-order link sharing |
 | 9 | Product `409`s do not say which field conflicted | low | telling a duplicate slug from a bad brand/category |
 | 10 | `ProductCreate` ignores unknown fields | low | silent typos (e.g. `status` on create) |
+| 11 | Password recovery returns the reset token in the response | **high** (production) | password reset actually being a secret |
 
 ---
 
@@ -523,6 +524,68 @@ gap. `ConfigDict` is already imported in this module.
 
 ---
 
+## 11. Stop returning the password-reset token in the response
+
+**Evidence** (live):
+
+```
+POST /api/auth/recovery/request  {"email":"<registered>"}  → 200
+{"success":true,"message":"Password recovery accepted",
+ "payload":{"accepted":true,"reset_token":"lhBrxIuLE_IPNGsIM_wV_irEaKSCMsLlL53p6k89ASw",
+            "expires_at":"2026-10-15T19:47:07.729960Z"}}
+```
+
+The use case generates a strong token, stores only its SHA-256 hash, expires it after one hour and
+invalidates previous ones — the token handling itself is sound. The problem is delivery: because
+nothing sends email yet, the raw token is handed to whoever asked, over an unauthenticated endpoint.
+Anyone who knows an email address can therefore take over the account, and the "no enumeration"
+property (`accepted: true` either way) does not help, because the token itself reveals whether the
+account exists.
+
+This is **fine for local development and dangerous in production**, so it needs one of two shapes:
+
+* **Preferred — send the token, never return it.** Add a notifier port next to `IPasswordService` and
+  return `reset_token: None` unconditionally. The frontend already renders that branch: the recovery
+  screen says *"No reset token came back, which means no active account uses that email"* and stops.
+
+### `app/application/use_cases/customer_account/__init__.py`
+
+```diff
+ class RequestPasswordRecoveryUseCase:
+-    def __init__(self, user_repository: IUserRepository, reset_token_repository):
++    def __init__(
++        self,
++        user_repository: IUserRepository,
++        reset_token_repository,
++        notifier: IPasswordResetNotifier,
++        expose_token: bool = False,
++    ):
+         self._users = user_repository
+         self._reset_tokens = reset_token_repository
++        self._notifier = notifier
++        self._expose_token = expose_token
+@@
+-        return RequestPasswordRecoveryResponse(
+-            accepted=True, reset_token=raw_token, expires_at=expires_at
+-        )
++        await self._notifier.send_reset_token(user.email, raw_token, expires_at)
++        return RequestPasswordRecoveryResponse(
++            accepted=True,
++            # Only the local/dev configuration may echo the token back.
++            reset_token=raw_token if self._expose_token else None,
++            expires_at=expires_at,
++        )
+```
+
+Gate `expose_token` on a config flag (`PASSWORD_RESET_EXPOSE_TOKEN=false` by default), so a developer
+can still drive the flow by hand while production never leaks it.
+
+**Frontend impact:** none required — the UI shows the token when it is present and explains the
+absence when it is not. `docs/integration/contract-audit.md` §11 says as much, so the behaviour is
+documented rather than assumed.
+
+---
+
 ## Smaller notes (no patch)
 
 * **No upper bound on `size`.** `fastapi_pagination.Params` accepts any page size; consider
@@ -540,3 +603,9 @@ gap. `ConfigDict` is already imported in this module.
 * **`GET /api/products/` can only filter by one category**, not a subtree (`category_id` matches exactly),
   so a storefront browsing a parent category has to enumerate descendants client-side or ask the public
   catalog endpoint instead.
+* **Addresses are a flat list with a single default.** A customer can unset the default
+  (`PUT {"is_default": false}`) and end up with none, and nothing auto-promotes another address when the
+  default is deleted. `checkout` will have to cope with "no default".
+* **`PUT /api/auth/me` has no email change** (the DTO forbids unknown fields). Changing an email needs a
+  verification flow, which the backend does not model yet — worth deciding before the storefront ships its
+  account page.

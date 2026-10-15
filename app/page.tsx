@@ -1,6 +1,24 @@
 import Link from "next/link";
 import BackendStatus from "@/components/feature/system/BackendStatus/BackendStatus";
 
+const CUSTOMER_LINKS = [
+  {
+    href: "/register",
+    label: "Create an account",
+    description: "Self-registration (POST /api/auth/register) — the account is active immediately.",
+  },
+  {
+    href: "/account",
+    label: "Your account",
+    description: "Profile (PUT /api/auth/me) and the address book (/api/me/addresses/).",
+  },
+  {
+    href: "/forgot-password",
+    label: "Password recovery",
+    description: "Request a reset token, then set a new password. Needs no session.",
+  },
+];
+
 const ADMIN_LINKS = [
   {
     href: "/admin/users",
@@ -11,6 +29,12 @@ const ADMIN_LINKS = [
     href: "/admin/roles",
     label: "Roles & permissions",
     description: "Build roles from the backend's 49 permissions. Requires roles:read.",
+  },
+  {
+    href: "/admin/catalog/products",
+    label: "Catalog",
+    description:
+      "Products, SKUs, categories, attributes, brands and uploads. Reads are public, writes need a permission.",
   },
 ];
 
@@ -59,7 +83,7 @@ export default function Home() {
           Sign in →
         </Link>
 
-        {[...ADMIN_LINKS, ...EXAMPLE_LINKS].map((link) => (
+        {[...CUSTOMER_LINKS, ...ADMIN_LINKS, ...EXAMPLE_LINKS].map((link) => (
           <Link
             key={link.href}
             href={link.href}

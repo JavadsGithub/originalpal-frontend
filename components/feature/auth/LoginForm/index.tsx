@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import Link from "next/link";
 import React, { useState } from "react";
 
 export interface LoginFormTranslations {
@@ -21,6 +22,8 @@ export interface LoginFormUIProps {
   callbacks: LoginFormCallbacks;
   isLoading?: boolean;
   errorMessage?: string | null;
+  /** Success notice carried over from another screen (e.g. after registering or resetting a password). */
+  notice?: string | null;
 }
 
 const defaultTranslations: LoginFormTranslations = {
@@ -39,6 +42,7 @@ export default function LoginFormUI({
   callbacks,
   isLoading = false,
   errorMessage = null,
+  notice = null,
 }: LoginFormUIProps) {
   const t = { ...defaultTranslations, ...translations };
   const [username, setUsername] = useState("");
@@ -60,6 +64,15 @@ export default function LoginFormUI({
           {t.subtitle}
         </p>
       </div>
+
+      {notice && !errorMessage && (
+        <div
+          data-testid="login-notice"
+          className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-300"
+        >
+          {notice}
+        </div>
+      )}
 
       {errorMessage && (
         <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/50 dark:text-red-400">
@@ -112,6 +125,15 @@ export default function LoginFormUI({
           {isLoading ? t.submittingButtonText : t.submitButtonText}
         </Button>
       </form>
+
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <Link href="/register" className="font-semibold text-neutral-600 hover:underline dark:text-neutral-300">
+          Create an account
+        </Link>
+        <Link href="/forgot-password" className="text-neutral-500 hover:underline dark:text-neutral-400">
+          Forgot your password?
+        </Link>
+      </div>
     </div>
   );
 }
