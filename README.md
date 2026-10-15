@@ -95,7 +95,8 @@ In short:
 | `pnpm permissions:sync -- --from ../originalpal-server-python/statics/permissions.json` | refresh the snapshot from the backend, then regenerate |
 | `pnpm permissions:check` | fail if the generated registry is stale (CI gate) |
 | `pnpm api:generate` | orval client generation from `OPENAPI_JSON_URL` (output in git-ignored `lib/api`) |
-| `pnpm smoke` | end-to-end contract check through the proxy against the live backend: auth lifecycle, RBAC, pagination, the catalog (upload → product → SKU → publish gates → archive) and the customer account (register → profile → password recovery → address book) |
+| `node scripts/seed-storefront-demo.mjs` | seeds a small `demo-` labelled catalog (categories, one variant attribute, three published products, two homepage blocks) through the API so the storefront has something to show; `--clean` removes it again |
+| `pnpm smoke` | end-to-end contract check through the proxy against the live backend: auth lifecycle, RBAC, pagination, the catalog (upload → product → SKU → publish gates → archive) the customer account (register → profile → password recovery → address book) and the storefront (public catalog, filters, homepage blocks) |
 
 ## Testing
 
@@ -104,7 +105,7 @@ Three layers, from fastest to most convincing:
 | Layer | Command | What it proves |
 | --- | --- | --- |
 | Unit / integration | `pnpm test` | the client layer against MSW replicas of live responses: envelope unwrapping, 401→refresh→replay, 422 normalisation, permission gates, table behaviour, the customer rules |
-| Headless contract | `pnpm smoke` | the real stack — browser-facing contract → `/api/*` proxy → FastAPI. Walks the admin account lifecycle (create inactive → activate → assign role → delete), the catalog lifecycle (upload → category/attribute links → product → SKU → the three publish gates → archive) and the customer lifecycle (register → profile → recovery → addresses), cleaning up after itself |
+| Headless contract | `pnpm smoke` | the real stack — browser-facing contract → `/api/*` proxy → FastAPI. Walks the admin account lifecycle (create inactive → activate → assign role → delete), the catalog lifecycle (upload → category/attribute links → product → SKU → the three publish gates → archive) the customer lifecycle (register → profile → recovery → addresses) and the storefront (anonymous public catalog, search/category filters, the active-SKU roll-up, homepage block rules), cleaning up after itself |
 | Browser end-to-end | `pnpm test:e2e` | the same flows *through the UI*, including session restore after a reload |
 
 `pnpm test:e2e` needs a browser: `pnpm exec playwright install chromium`, a running backend with seed
@@ -173,13 +174,41 @@ Three behaviours worth knowing before touching it:
   `username`, refuses an empty body (`422 field=profile`) and refuses `email` outright (unknown field),
   so the form renders the email as read-only.
 
+## Storefront
+
+The public half of the app lives in the `app/(storefront)` route group, so the URLs are the plain
+shopper ones and the shell is the same signed out or signed in:
+
+| Screen | Endpoints | Notes |
+| --- | --- | --- |
+| `/` | `GET /api/homepage/` | editor-managed blocks (audit §12) rendered per `block_type`; navigation comes from the API, not from a hardcoded list |
+| `/search` | `GET /api/catalog/products/`, `GET /api/categories/`, `GET /api/brands/` | filters live in the URL (`?q=&category=&brand=`); the term is debounced, selects apply at once |
+| `/categories`, `/categories/{id}` | `GET /api/categories/`, `GET /api/catalog/products/?category_id=…` | the tree is built from the flat list; the page links to its children because `category_id` is an exact match |
+| `/products/{id}` | `GET /api/catalog/products/{id}` | by **id** (there is no slug-addressed public route); `404` is a real state — drafts and sold-out-of-active-SKUs products both answer it |
+| `/cart`, `/blog` | – | placeholders, because the API's navigation advertises them before the features exist |
+| `/dev` | – | the previous integration-status page: every slice's entry points in one list |
+
+Three things about this surface are deliberate, all of them verified live (audit §12):
+
+* **No session, ever.** Every read above is anonymous; the storefront never attaches an access token to a
+  product query (`data/feature/storefront/useGetPublicProducts` asserts that in a test).
+* **Images are placeholders.** `GET /api/files/{id}/download` answers `401` for a shopper, so cards say
+  "image needs staff access", the gallery lists file ids, and a banner only renders an external
+  `http(s)` URL. Backend follow-up **#15** proposes the public media route that removes this.
+* **What the API cannot answer, the UI says.** A category page admits it does not include
+  subcategories; a homepage block lists the `target_ids` that no longer resolve instead of showing an
+  empty shelf; a product that vanished from the public catalog explains which states cause that.
+
 ## Roadmap
 
-The backend exposes 114 operations; the frontend consumes auth, users, roles and the catalog back
-office. Next slices, in the order the audit suggests:
+The backend exposes 114 operations; the frontend consumes auth, users, roles, the catalog back office
+and the public storefront reads. Next slices, in the order the audit suggests:
 
 1. ~~Admin back-office: users + roles + permission pickers~~ — done (§9 of the audit).
 2. ~~Catalog management: products, SKUs, categories, attributes, brands (+ uploads for images)~~ — done
    (§10 of the audit).
 3. ~~Customer account: register, profile update, password recovery~~ — done (§11 of the audit).
-4. Storefront: public catalog, homepage blocks, cart, checkout, orders.
+4. ~~Storefront browsing: public catalog, category/search pages, homepage blocks~~ — done (§12 of the
+   audit).
+5. Cart → checkout → orders: `/api/carts` (guest and customer), delivery options, checkout sessions,
+   payments, orders, order messages, policies.

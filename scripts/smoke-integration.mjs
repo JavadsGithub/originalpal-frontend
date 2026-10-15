@@ -1090,7 +1090,7 @@ async function main() {
     feedBlocks.some((block) => block.title === `Smoke ghost block ${suffix}`) &&
       (feedBlocks.find((block) => block.title === `Smoke ghost block ${suffix}`)?.target_ids ?? [])
         .length === 1,
-    "  an unknown target_ids value is published as-is — nothing validates it (follow-up #13)",
+    "  an unknown target_ids value is published as-is — nothing validates it (follow-up #12)",
     "ghost block served to the storefront",
   );
 

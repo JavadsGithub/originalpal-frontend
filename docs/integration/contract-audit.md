@@ -413,7 +413,8 @@ normalises both into `fieldErrors`, which the catalog dialogs render inline.
 
 Registration, profile, password recovery and the address book were probed the same way as the rest:
 against the running backend, with the probe creating and deleting its own accounts. `pnpm smoke` now
-walks the whole lifecycle headless (85 checks) so drift fails a command instead of a review.
+walks the whole lifecycle headless (85 checks at the time; 115 today) so drift fails a command
+instead of a review.
 
 ### Registration is *not* the admin endpoint
 
@@ -468,3 +469,123 @@ outbound email yet (backend follow-up #11). The recovery screen therefore shows 
 and offers to continue to `/reset-password?token=…`. Everything about it is single-use and expires in
 an hour, and the endpoint answers identically for unknown emails — so the *endpoint* is fine; the
 delivery mechanism is the temporary part.
+
+## 12. Addendum — storefront browsing, probed on the live server
+
+The public storefront is the first slice that runs **without a session**: everything below was probed
+anonymously (no token, no cookie) against the running backend, and `scripts/smoke-integration.mjs`
+section 5e now drives the same surface headless (115 checks in total). The probe and the smoke section
+create their own catalog rows and delete them again; the database is back to its baseline afterwards.
+
+### The two endpoints the storefront is allowed to need
+
+| Call | Anonymous result |
+| --- | --- |
+| `GET /api/catalog/products/?page&size` | `200`, `{items,total,page,size,pages}` — published products with ≥1 active SKU |
+| `GET /api/catalog/products/{id}` | `200`, the same summary **plus** `description` and `skus[]` |
+| `GET /api/categories/?page&size`, `GET /api/brands/?page&size` | `200` — public reads (already used by the back office) |
+| `GET /api/homepage/` | `200`, `{blocks:[…], navigation:[…]}` — **active blocks only** |
+| `GET /api/homepage/blocks/` | `401 CREDENTIALS_VALIDATION_ERROR` — the management list needs `homepage:read` |
+| `GET /api/files/{id}` / `…/download` | `401` — **uploaded images are not public** (follow-up #15) |
+
+The public projections are deliberately narrower than the admin ones, and the smoke test pins the field
+lists so a backend change cannot slip through silently:
+
+* a **summary** is exactly `id, title, slug, category_id, brand_id, summary, highlights, gallery,
+  min_price_cents, max_price_cents, has_stock, active_sku_count` — no `cost_cents`, no `status`, no
+  `attribute_values`;
+* a **public SKU** is exactly `id, code, option_values, price_cents, stock_quantity, image_gallery,
+  is_available` — `stock_quantity` is *available* stock (stored − reserved − committed), and
+  `is_available` is the server's own `stock_quantity > 0`;
+* `gallery` and `image_gallery` hold raw **file ids**, not URLs.
+
+### Visibility is `published` **and** an active SKU
+
+| State | `GET /api/catalog/products/{id}` | In `GET /api/catalog/products/` |
+| --- | --- | --- |
+| `draft`, with an active SKU | `404 RESOURCE_NOT_FOUND` | absent |
+| `published`, one active SKU | `200` | listed |
+| `published`, all SKUs deactivated | `404 RESOURCE_NOT_FOUND` | absent |
+| archived | `404` (the row is gone) | absent |
+
+Deactivating the last stocked SKU therefore *hides* the product rather than showing "out of stock" — a
+published product whose SKUs are all inactive answers `404`. The UI treats that as a first-class state
+("this product is not available") because a shopper can reach it from a stale link.
+
+### Filters, bounds and the two 422 dialects
+
+| Call | Live result |
+| --- | --- |
+| `?search=Probe` | matches title **or** slug **or** SKU code, case-insensitive, `ILIKE %…%` |
+| `?category_id=<id>` | **exact match** — a product in a child category is *not* returned for the parent (follow-up #14) |
+| `?brand_id=<id>` | exact match |
+| `?size=101` | FastAPI `422` `{detail:[{type:"less_than_equal", loc:["query","size"]}]}` |
+| `?page=0` | FastAPI `422` `{detail:[{type:"greater_than_equal", loc:["query","page"]}]}` |
+
+Both bounds are pydantic — `fastapi_pagination` on this endpoint — so they arrive as `{detail:[…]}` and
+not as the enveloped `VALIDATION_ERROR`. (The admin listing and `GET /api/homepage/blocks/` use the
+project's own `_validate_page_size`, which *is* enveloped: `422 payload.details.field = "page"|"size"`.
+The client's normaliser handles both dialects, so nothing branches on the endpoint.) Concrete effect on
+the UI: the storefront never asks for `size > 100`, and the search box trims whitespace so a blank term
+is dropped instead of sent.
+
+### Homepage blocks: what an editor writes is what the storefront gets
+
+| Rule | Live result |
+| --- | --- |
+| `block_type` | `banner` \| `products` \| `categories`; anything else → `422 field=block_type` |
+| `banner` | **requires** `image_url` *and* `target_url` → `422 field=image_url` (`"Banner blocks require image and target URLs"`) |
+| `products`, `categories` | "curated" blocks: **require** ≥1 `target_ids` → `422 field=target_ids` |
+| blank `title` | `422 field=title` |
+| `target_ids` | **not validated** — an unknown UUID is stored and served to the storefront (follow-up #12) |
+| `is_active: false` | stored, listed in the back office, **omitted** from `GET /api/homepage/` |
+| public order | `display_order`, then `created_at`, then `id` — verified by creating blocks out of order |
+| `PUT` | partial: omitted fields preserved; `{"subtitle": null}` clears it; `{"title": null}` → `422` (`reject_null_required_update_values`) |
+| `navigation` | five hardcoded entries: `Categories /categories`, `Search /search`, `Cart /cart`, `Account /account`, `Blog /blog` |
+
+`display_order` is honoured, so the client renders the feed in the order it arrives and adds no sorting
+of its own — the smoke test asserts it by creating a `display_order: 9` block first and a
+`display_order: 1` block second, then checking that the public feed inverts them.
+
+### Three findings that changed the UI
+
+1. **Images are permission-gated.** `GET /api/files/{id}/download` answers `401` anonymously, so a
+   product card cannot show a photo and the gallery can only list file ids. Rather than shipping broken
+   `<img>` tags the storefront says what is happening, and a `banner` block renders an image only for an
+   external `http(s)` URL — a `/api/files/…` URL would 401 for every shopper (follow-up #15).
+2. **`category_id` does not roll up.** A parent category page returns only its own products, so the
+   category screen links to its children explicitly and says why, instead of implying coverage
+   (follow-up #14).
+3. **`target_ids` are stored unvalidated.** A block can point at a product that was archived afterwards,
+   and the feed still serves it. The homepage resolves the ids it can and lists the ones it cannot,
+   instead of rendering an empty shelf (follow-up #12).
+
+### Archive is soft, and only the slug is freed
+
+`DELETE /api/products/{id}` answers `200 status=archived`, but the row **stays** (`status='archived'`)
+together with its SKUs (`is_active=0`) — every read path filters them out, so the product vanishes from
+the API without being deleted. Two consequences the storefront cares about:
+
+* a product **slug** can be reused afterwards (`uq_commerce_products_live_slug` only covers live rows),
+  so a slug is not a stable public address — which is why the storefront links products by **id**;
+* a SKU **code** can never be reused, because `commerce_skus.code` is globally unique across hidden rows
+  too, deactivation included. Backend follow-up **#17** proposes the fix; until then every script that
+  creates SKUs (the smoke suite, the demo seeder) mints run-unique codes.
+
+### A variant has two homes, and only one of them publishes
+
+`POST /api/products/{id}/skus/` accepts an `option_values` map (keyed by attribute **slug**) *and*
+`POST …/skus/{id}/attribute-values/` writes the same fact through the attribute engine. The two are not
+kept in step:
+
+* `option_values` is **unvalidated** — `{"not-an-attribute-slug": "not-an-option"}` returns `200` and is
+  served to the storefront as-is (follow-up #16);
+* a SKU whose variant value exists **only** in `option_values` fails publication with
+  `422 field=attribute_values` (*"Required SKU attribute value is missing"*), i.e. the publish gate reads
+  the attribute-values table only;
+* two SKUs with the same option combination are refused with `409 CONFLICT` (`option_signature` is unique
+  per product, together with the code).
+
+The back office therefore keeps writing values through `…/attribute-values/` (the strict path), and the
+public `option_values` in the storefront are shown as they are — with the caveat that they may not be
+what the catalog meant.
