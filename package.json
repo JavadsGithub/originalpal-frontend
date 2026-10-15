@@ -3,11 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 0.0.0.0",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 0.0.0.0",
     "lint": "eslint",
-    "api:generate": "orval --config orval.config.ts"
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm typecheck && pnpm lint && pnpm permissions:check",
+    "api:generate": "orval --config orval.config.ts",
+    "permissions:sync": "node scripts/sync-permissions.mjs",
+    "permissions:check": "node scripts/sync-permissions.mjs --check",
+    "smoke": "node scripts/smoke-integration.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
@@ -35,5 +40,6 @@
     "orval": "^8.10.0",
     "tailwindcss": "^4",
     "typescript": "^5"
-  }
+  },
+  "packageManager": "pnpm@10.34.7"
 }

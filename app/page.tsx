@@ -1,11 +1,71 @@
 import Link from "next/link";
+import BackendStatus from "@/components/feature/system/BackendStatus/BackendStatus";
 
+const EXAMPLE_LINKS = [
+  {
+    href: "/examples/admin/users",
+    label: "Admin · Users",
+    description: "Protected by users:read — good first check after signing in.",
+  },
+  {
+    href: "/examples/admin/invoices",
+    label: "Admin · Invoices",
+    description: "Mock-data showcase of the component framework.",
+  },
+  {
+    href: "/examples/me/invoices",
+    label: "My · Invoices",
+    description: "Same abstract UI, different dependency injector.",
+  },
+];
+
+/**
+ * Route layer (Level 2): composes dependency injectors only — no data hooks, no UI primitives.
+ * The sign-in page is `/login`; the backend's seed account is `admin` / `Secret123`.
+ */
 export default function Home() {
   return (
-    <div className="w-screen h-screen flex justify-center items-center gap-4">
-      <Link href="/examples/me/invoices">My Invoices Example</Link>
-      <span> | </span>
-      <Link href="/examples/admin/invoices">Admin Invoices Example</Link>
-    </div>
+    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center gap-8 px-6 py-16">
+      <header className="space-y-2 text-center">
+        <h1 className="text-3xl font-bold tracking-tight text-neutral-900 dark:text-neutral-50">
+          Original Pal
+        </h1>
+        <p className="text-sm text-neutral-600 dark:text-neutral-400">
+          Storefront and back-office client for the{" "}
+          <span className="font-mono">originalpal-server-python</span> API.
+        </p>
+        <p className="text-xs text-neutral-500 dark:text-neutral-500">
+          Sign in with the seeded account{" "}
+          <span className="font-mono">admin</span> /{" "}
+          <span className="font-mono">Secret123</span>.
+        </p>
+      </header>
+
+      <BackendStatus />
+
+      <nav className="grid w-full max-w-xl gap-3">
+        <Link
+          href="/login"
+          className="rounded-xl border border-neutral-300 px-5 py-4 text-sm font-semibold text-neutral-900 transition hover:border-neutral-900 dark:border-neutral-700 dark:text-neutral-100 dark:hover:border-neutral-100"
+        >
+          Sign in →
+        </Link>
+
+        {EXAMPLE_LINKS.map((link) => (
+          <Link
+            key={link.href}
+            href={link.href}
+            className="rounded-xl border border-neutral-200 px-5 py-4 transition hover:border-neutral-400 dark:border-neutral-800 dark:hover:border-neutral-600"
+          >
+            <span className="block text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+              {link.label}
+            </span>
+            <span className="mt-0.5 block text-xs text-neutral-500 dark:text-neutral-400">
+              {link.description}
+            </span>
+          </Link>
+        ))}
+      </nav>
+    </main>
   );
 }

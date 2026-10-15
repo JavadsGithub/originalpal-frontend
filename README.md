@@ -1,36 +1,106 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Original Pal — Frontend
 
-## Getting Started
+Next.js 16 (App Router) client for **[originalpal-server-python](https://github.com/JavadsGithub/originalpal-server-python)**,
+a FastAPI backend using Clean Architecture, JWT auth (HttpOnly refresh cookie), RBAC, and a
+`StandardResponse` envelope on every endpoint.
 
-First, run the development server:
+The two projects are wired together on purpose, not by accident: the API contract, the permission
+registry, and the transport model are all verified against a running backend. See
+[`docs/integration/contract-audit.md`](docs/integration/contract-audit.md) for the full audit and
+[`docs/integration/environment.md`](docs/integration/environment.md) for configuration details.
+
+## Requirements
+
+- Node.js 20+ (developed on 22) and **pnpm** (`corepack enable pnpm`)
+- The backend running locally — see the section below
+
+## Quick start
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# 1. Backend (separate checkout)
+#    cd ../originalpal-server-python && make init && make dev      # http://localhost:8000
+#    Port 8004 is used by `uv run python -m app.main`, which is what this repo defaults to.
+
+# 2. Frontend
+pnpm install
+cp .env.example .env.local     # defaults work as-is for a backend on 127.0.0.1:8004
+pnpm dev                       # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Seeded backend account: **`admin` / `Secret123`** (super user → bypasses every permission check).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Verify the integration at any time:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+pnpm smoke        # login → me → permissions → users → refresh → logout, through the proxy
+pnpm check        # typecheck + lint + permission-registry drift check
+```
 
-## Learn More
+## How the frontend talks to the API
 
-To learn more about Next.js, take a look at the following resources:
+```
+Browser ──/api/*──► Next.js server (same origin) ──API_PROXY_TARGET──► FastAPI
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+* The browser only ever calls **its own origin** (`/api/...`), so there is **no CORS** involved and
+  the backend's `HttpOnly` `refresh_token` cookie is **first-party**.
+* `app/api/[...path]/route.ts` forwards `/api/*` to `API_PROXY_TARGET` (default
+  `http://127.0.0.1:8004`) — a streaming route handler rather than a `rewrites()` entry, because
+  rewrites normalise trailing slashes (breaking `/api/users/`) and pass the backend's absolute
+  `Location` header through (leaking an unreachable internal host). It forwards the path verbatim,
+  rewrites backend-origin redirects to same-origin paths, and keeps every `Set-Cookie` intact.
+* Frontend-owned route handlers under `app/api/**` (for example `GET /api/health`) win over the
+  proxy; everything else under `/api` is forwarded verbatim, including uploads and file downloads.
+* Set `NEXT_PUBLIC_API_URL` to an absolute URL only if you want the browser to call the backend
+  directly — that requires a matching CORS allowlist on the backend.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Architecture
 
-## Deploy on Vercel
+The component framework is documented in
+[`docs/cookbook/component-development-framework.md`](docs/cookbook/component-development-framework.md).
+In short:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Layer | Location | Rule |
+| --- | --- | --- |
+| 1. App | `app/layout.tsx`, `components/layout/` | providers, shells, global setup |
+| 2. Route | `app/**/page.tsx` | imports **dependency injectors** only |
+| 3. Component | `components/feature/**` | `index.tsx` = pure UI (primitives only), `<Name>.tsx` = injector that wires data |
+| Data | `data/feature/**` | one hook per concern; owns all API access |
+| Networking | `lib/fetcher.ts`, `lib/api-error.ts`, `lib/config.ts`, `lib/types/` | envelope, tokens, errors, types |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Contract rules the code depends on
+
+| Rule | Detail |
+| --- | --- |
+| Envelope | `{success, message, payload}`; `payload` may be `null` (e.g. `GET /api/ping`) |
+| Errors | domain failures use the envelope (`payload.error_code`); FastAPI's 422 uses `{detail:[...]}` — both normalised by `lib/api-error.ts` into `ApiError` |
+| 401 vs 403 | 401 → refresh once, else session expired; 403 → authenticated but not allowed (never logs out) |
+| Collection paths | declared with a trailing slash (`/api/users/`); without it FastAPI answers **307** |
+| Pagination | `{items,total,page,size,pages}` with `page`/`size` query params |
+| Permissions | ids live in `lib/permissions.ts`, **generated** from the backend registry (`pnpm permissions:sync`) |
+| Access token | memory only; a reload restores the session through one silent `POST /api/auth/refresh` |
+
+## Scripts
+
+| Script | Purpose |
+| --- | --- |
+| `pnpm dev` | dev server on `0.0.0.0:3000` (proxy active) |
+| `pnpm build` / `pnpm start` | production build / serve |
+| `pnpm typecheck` | `tsc --noEmit` |
+| `pnpm lint` | ESLint |
+| `pnpm check` | typecheck + lint + `permissions:check` |
+| `pnpm permissions:sync` | regenerate `lib/permissions.ts` from `statics/permissions.json` |
+| `pnpm permissions:sync -- --from ../originalpal-server-python/statics/permissions.json` | refresh the snapshot from the backend, then regenerate |
+| `pnpm permissions:check` | fail if the generated registry is stale (CI gate) |
+| `pnpm api:generate` | orval client generation from `OPENAPI_JSON_URL` (output in git-ignored `lib/api`) |
+| `pnpm smoke` | end-to-end contract check through the proxy against the live backend |
+
+## Roadmap
+
+The backend exposes 114 operations; the frontend currently consumes the auth and user-management
+slice. Next slices, in the order the audit suggests:
+
+1. Admin back-office: users + roles + permission pickers (uses `permissionCatalog`).
+2. Catalog management: products, SKUs, categories, attributes, brands (+ uploads for images).
+3. Storefront: public catalog, homepage blocks, cart, checkout, orders, customer addresses.
+4. Customer account: register, profile update, password recovery.

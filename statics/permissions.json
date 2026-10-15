@@ -1,0 +1,376 @@
+[
+  {
+    "id": "708269c3-6740-445d-a528-ff88c60c7eb5",
+    "title": "super:user",
+    "description": "Ability to do anything",
+    "created_at": "2025-12-12T00:31:06Z",
+    "updated_at": "2025-12-13T19:35:32Z"
+  },
+  {
+    "id": "a7a7a152-0738-496a-893e-5beec67c349c",
+    "title": "permissions:read",
+    "description": "Ability to read permissions",
+    "created_at": "2025-12-12T00:33:28Z",
+    "updated_at": "2025-12-12T00:33:28Z"
+  },
+  {
+    "id": "5079a76b-427a-4a68-8178-dcf12d25915e",
+    "title": "roles:create",
+    "description": "Ability to create roles",
+    "created_at": "2025-12-12T00:34:06Z",
+    "updated_at": "2025-12-12T00:34:06Z"
+  },
+  {
+    "id": "df372a87-6d17-481d-9a6c-002bb9590703",
+    "title": "roles:read",
+    "description": "Ability to read roles",
+    "created_at": "2025-12-12T00:34:32Z",
+    "updated_at": "2025-12-12T00:34:32Z"
+  },
+  {
+    "id": "e756611f-1311-4ce5-b470-0c39a947a782",
+    "title": "roles:update",
+    "description": "Ability to update roles",
+    "created_at": "2025-12-12T00:35:11Z",
+    "updated_at": "2025-12-12T00:35:11Z"
+  },
+  {
+    "id": "27d97cc1-01d7-48e6-9644-955c884297ce",
+    "title": "roles:delete",
+    "description": "Ability to delete roles",
+    "created_at": "2025-12-12T00:36:04Z",
+    "updated_at": "2025-12-12T00:36:04Z"
+  },
+  {
+    "id": "4ccef382-49a7-4a0c-8532-f9e1510345e8",
+    "title": "roles:assign_permission",
+    "description": "Ability to assign permissions to roles",
+    "created_at": "2025-12-12T00:37:27Z",
+    "updated_at": "2025-12-12T00:37:27Z"
+  },
+  {
+    "id": "1172ee5f-73f4-4333-b131-d168d8420375",
+    "title": "roles:unassign_permission",
+    "description": "Ability to remove permissions from roles",
+    "created_at": "2025-12-12T00:38:42Z",
+    "updated_at": "2025-12-12T00:38:42Z"
+  },
+  {
+    "id": "42a81114-3fe6-4b3e-86f9-d4ef14be65b2",
+    "title": "users:create",
+    "description": "Ability to create users",
+    "created_at": "2025-12-12T00:42:08Z",
+    "updated_at": "2025-12-12T00:42:08Z"
+  },
+  {
+    "id": "16d66325-e959-46d6-a538-69adb33418e1",
+    "title": "users:read",
+    "description": "Ability to read users",
+    "created_at": "2025-12-12T00:42:16Z",
+    "updated_at": "2025-12-12T00:42:16Z"
+  },
+  {
+    "id": "9b21dc05-4483-4ee5-b2a8-1cb40ca3dd38",
+    "title": "users:update",
+    "description": "Ability to update users",
+    "created_at": "2025-12-12T00:42:29Z",
+    "updated_at": "2025-12-12T00:42:29Z"
+  },
+  {
+    "id": "cf9835c2-afe2-4504-891c-5c2cdb2fa5aa",
+    "title": "users:delete",
+    "description": "Ability to remove users",
+    "created_at": "2025-12-12T00:42:45Z",
+    "updated_at": "2025-12-12T00:42:45Z"
+  },
+  {
+    "id": "88cd4ed4-97d8-4265-88b2-bacaa44e16a9",
+    "title": "users:assign_role",
+    "description": "Ability to assign roles to users",
+    "created_at": "2025-12-12T00:42:59Z",
+    "updated_at": "2025-12-12T00:42:59Z"
+  },
+  {
+    "id": "3920e61d-1d5f-4cae-ac5e-391a455e8e15",
+    "title": "users:unassign_role",
+    "description": "Ability to remove roles from users",
+    "created_at": "2025-12-12T00:43:41Z",
+    "updated_at": "2025-12-12T00:43:41Z"
+  },
+  {
+    "id": "d2ddfb9d-1184-4c77-925c-8c3198baddb8",
+    "title": "uploads:create",
+    "description": "Ability to upload files",
+    "created_at": "2026-10-02T00:00:00Z",
+    "updated_at": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "84189e4d-326a-4a90-b50d-df875257982e",
+    "title": "uploads:read",
+    "description": "Ability to read uploaded file metadata",
+    "created_at": "2026-10-02T00:00:00Z",
+    "updated_at": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "65c5566d-a786-4948-8977-38f62121afd3",
+    "title": "uploads:download",
+    "description": "Ability to download uploaded files",
+    "created_at": "2026-10-02T00:00:00Z",
+    "updated_at": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "c8818260-7b9f-4e71-af3f-fb71397b31c0",
+    "title": "uploads:delete",
+    "description": "Ability to delete uploaded files",
+    "created_at": "2026-10-02T00:00:00Z",
+    "updated_at": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "4630b922-4289-483f-9a4c-17f489e1606a",
+    "title": "categories:create",
+    "description": "Create merchandise categories",
+    "policies": [],
+    "created_at": "2026-10-02T18:50:07Z",
+    "updated_at": "2026-10-02T18:50:07Z"
+  },
+  {
+    "id": "6c815206-998c-49e2-9eab-3634518b7cd0",
+    "title": "categories:update",
+    "description": "Update merchandise categories",
+    "policies": [],
+    "created_at": "2026-10-02T22:06:01Z",
+    "updated_at": "2026-10-02T22:06:01Z"
+  },
+  {
+    "id": "a5c2ee6c-9842-44e9-971a-e47c6753660b",
+    "title": "categories:delete",
+    "description": "Delete merchandise categories",
+    "policies": [],
+    "created_at": "2026-10-02T22:06:01Z",
+    "updated_at": "2026-10-02T22:06:01Z"
+  },
+  {
+    "id": "a86511a0-6fbe-4894-8ed6-7c833fb9a7a4",
+    "title": "attributes:create",
+    "description": "Create reusable commerce attribute definitions",
+    "policies": [],
+    "created_at": "2026-10-07T10:07:04Z",
+    "updated_at": "2026-10-07T10:07:04Z"
+  },
+  {
+    "id": "77e96e35-658a-492c-87c0-9525ddff1848",
+    "title": "attributes:update",
+    "description": "Update reusable commerce attribute definitions",
+    "policies": [],
+    "created_at": "2026-10-07T10:07:04Z",
+    "updated_at": "2026-10-07T10:07:04Z"
+  },
+  {
+    "id": "16a64030-20ef-4f88-b600-a2d5416d7477",
+    "title": "attributes:delete",
+    "description": "Delete reusable commerce attribute definitions",
+    "policies": [],
+    "created_at": "2026-10-07T10:07:04Z",
+    "updated_at": "2026-10-07T10:07:04Z"
+  },
+  {
+    "id": "038604a2-3fc9-48b5-af79-2ce6b8b0c8e4",
+    "title": "category-attributes:create",
+    "description": "Attach reusable attribute definitions to merchandise categories",
+    "policies": [],
+    "created_at": "2026-10-07T10:25:50Z",
+    "updated_at": "2026-10-07T10:25:50Z"
+  },
+  {
+    "id": "726eee4b-754d-4e82-b466-f055355d17a3",
+    "title": "category-attributes:update",
+    "description": "Update merchandise category attribute applicability",
+    "policies": [],
+    "created_at": "2026-10-07T10:25:50Z",
+    "updated_at": "2026-10-07T10:25:50Z"
+  },
+  {
+    "id": "0023f2b4-36b2-4742-80b7-831da4a3685a",
+    "title": "category-attributes:delete",
+    "description": "Remove merchandise category attribute applicability",
+    "policies": [],
+    "created_at": "2026-10-07T10:25:50Z",
+    "updated_at": "2026-10-07T10:25:50Z"
+  },
+  {
+    "id": "d3660d43-a1c1-46dc-9339-f19c2d72ee2d",
+    "title": "brands:create",
+    "description": "Create commerce brands",
+    "policies": [],
+    "created_at": "2026-10-07T10:44:35Z",
+    "updated_at": "2026-10-07T10:44:35Z"
+  },
+  {
+    "id": "b602b025-31ba-4330-ab73-bc0d2437af11",
+    "title": "brands:update",
+    "description": "Update commerce brands",
+    "policies": [],
+    "created_at": "2026-10-07T10:44:35Z",
+    "updated_at": "2026-10-07T10:44:35Z"
+  },
+  {
+    "id": "6960b988-5b93-47dd-ab0c-0fb4f854198a",
+    "title": "brands:delete",
+    "description": "Delete commerce brands",
+    "policies": [],
+    "created_at": "2026-10-07T10:44:35Z",
+    "updated_at": "2026-10-07T10:44:35Z"
+  },
+  {
+    "id": "7561076a-486c-4027-ad44-0bd159f3b13f",
+    "title": "products:create",
+    "description": "Create catalog products",
+    "policies": [],
+    "created_at": "2026-10-07T10:59:55Z",
+    "updated_at": "2026-10-07T10:59:55Z"
+  },
+  {
+    "id": "f9e5c531-a94e-42c1-959d-a83a080243db",
+    "title": "products:update",
+    "description": "Update catalog products",
+    "policies": [],
+    "created_at": "2026-10-07T10:59:55Z",
+    "updated_at": "2026-10-07T10:59:55Z"
+  },
+  {
+    "id": "fe4d8b83-9460-4c26-ae97-c305fe378617",
+    "title": "products:delete",
+    "description": "Archive catalog products",
+    "policies": [],
+    "created_at": "2026-10-07T10:59:55Z",
+    "updated_at": "2026-10-07T10:59:55Z"
+  },
+  {
+    "id": "73ec6c41-4e14-41fe-8619-24bce3817636",
+    "title": "skus:create",
+    "description": "Create product SKUs",
+    "policies": [],
+    "created_at": "2026-10-07T15:32:47Z",
+    "updated_at": "2026-10-07T15:32:47Z"
+  },
+  {
+    "id": "fc32689c-ce81-47af-aad2-b1141973e31f",
+    "title": "skus:update",
+    "description": "Update product SKUs",
+    "policies": [],
+    "created_at": "2026-10-07T15:32:47Z",
+    "updated_at": "2026-10-07T15:32:47Z"
+  },
+  {
+    "id": "361ecb4a-5005-4734-a55f-3eac334a860b",
+    "title": "skus:delete",
+    "description": "Deactivate product SKUs",
+    "policies": [],
+    "created_at": "2026-10-07T15:32:47Z",
+    "updated_at": "2026-10-07T15:32:47Z"
+  },
+  {
+    "id": "e47fb243-44be-4668-8777-2ce916906f1f",
+    "title": "attribute-values:create",
+    "description": "Create product and SKU attribute values",
+    "policies": [],
+    "created_at": "2026-10-07T16:01:44Z",
+    "updated_at": "2026-10-07T16:01:44Z"
+  },
+  {
+    "id": "b94f539d-a7f1-4ddb-8267-1d6506c8eb05",
+    "title": "attribute-values:update",
+    "description": "Update product and SKU attribute values",
+    "policies": [],
+    "created_at": "2026-10-07T16:01:44Z",
+    "updated_at": "2026-10-07T16:01:44Z"
+  },
+  {
+    "id": "05f70c94-ebc0-44a6-95f9-79822136ee64",
+    "title": "attribute-values:delete",
+    "description": "Delete product and SKU attribute values",
+    "policies": [],
+    "created_at": "2026-10-07T16:01:44Z",
+    "updated_at": "2026-10-07T16:01:44Z"
+  },
+  {
+    "id": "eae91a9d-a05c-4c8b-a194-15a2c627da6b",
+    "title": "products:publish",
+    "description": "Publish catalog products",
+    "policies": [],
+    "created_at": "2026-10-07T16:24:51Z",
+    "updated_at": "2026-10-07T16:24:51Z"
+  },
+  {
+    "id": "53c104aa-0568-4fb6-b490-98c1729bcddb",
+    "title": "products:unpublish",
+    "description": "Unpublish catalog products",
+    "policies": [],
+    "created_at": "2026-10-07T16:24:51Z",
+    "updated_at": "2026-10-07T16:24:51Z"
+  },
+  {
+    "id": "267390d1-cf03-4f7d-b6f8-22f3b88d4c7a",
+    "title": "orders:read",
+    "description": "Read and search commerce orders",
+    "policies": [],
+    "created_at": "2026-10-08T05:57:35Z",
+    "updated_at": "2026-10-08T05:57:35Z"
+  },
+  {
+    "id": "3dcc0071-c523-49b9-a6e8-efff6a417965",
+    "title": "orders:fulfill",
+    "description": "Move commerce orders through fulfillment",
+    "policies": [],
+    "created_at": "2026-10-08T05:57:35Z",
+    "updated_at": "2026-10-08T05:57:35Z"
+  },
+  {
+    "id": "6c7b92af-3bbc-4d48-9729-2db056a9ef2b",
+    "title": "orders:cancel",
+    "description": "Cancel commerce orders",
+    "policies": [],
+    "created_at": "2026-10-08T05:57:35Z",
+    "updated_at": "2026-10-08T05:57:35Z"
+  },
+  {
+    "id": "22561bbd-e8a0-4dbd-a0c5-726be969f49a",
+    "title": "orders:refund",
+    "description": "Record commerce order refunds",
+    "policies": [],
+    "created_at": "2026-10-08T05:57:35Z",
+    "updated_at": "2026-10-08T05:57:35Z"
+  },
+  {
+    "id": "f7542c52-f9b4-49e2-9d24-5cb1d5d0679d",
+    "title": "homepage:read",
+    "description": "Read homepage block administration",
+    "policies": [],
+    "created_at": "2026-10-10T21:53:15Z",
+    "updated_at": "2026-10-10T21:53:15Z"
+  },
+  {
+    "id": "809a779a-5712-427d-93a9-cd6a85e30e6e",
+    "title": "homepage:create",
+    "description": "Create homepage blocks",
+    "policies": [],
+    "created_at": "2026-10-10T21:53:15Z",
+    "updated_at": "2026-10-10T21:53:15Z"
+  },
+  {
+    "id": "e3a3b52f-f6ac-4b76-8de3-9e3b06c9af7d",
+    "title": "homepage:update",
+    "description": "Update homepage blocks",
+    "policies": [],
+    "created_at": "2026-10-10T21:53:15Z",
+    "updated_at": "2026-10-10T21:53:15Z"
+  },
+  {
+    "id": "b584dc8a-3b57-49ee-a5b3-e96cdbe21caf",
+    "title": "homepage:delete",
+    "description": "Delete homepage blocks",
+    "policies": [],
+    "created_at": "2026-10-10T21:53:15Z",
+    "updated_at": "2026-10-10T21:53:15Z"
+  }
+]
