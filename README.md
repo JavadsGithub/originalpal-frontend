@@ -139,7 +139,8 @@ All of it is probed live and written up in
   admin sees why a product is blocked, but `POST /api/products/{id}/publish` is still the authority.
 * **Archiving removes the product from the API.** `DELETE /api/products/{id}` returns
   `status: "archived"` and then `GET /api/products/{id}` answers `404` — the detail page renders that
-  as a "not found" state. Product slugs are not unique.
+  as a "not found" state. Slugs are unique among non-archived products (a duplicate answers
+  `409 CONFLICT`), and archiving frees the slug because the row is gone.
 * **Attribute values are typed JSON**, validated against the definition: numbers must be numbers,
   choices must come from `choices`, and a `sku`-level attribute cannot be answered on the product.
   `lib/types/catalog.ts` + `AttributeValueField` encode this; the dialogs send typed values.

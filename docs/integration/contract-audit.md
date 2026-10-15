@@ -262,7 +262,7 @@ slices; nothing in the auth/RBAC path depends on them.
 The screens added after the first audit (`/admin/users`, `/admin/roles`) were checked the same way:
 against the running backend, never against fixtures.
 
-`pnpm smoke` now walks the whole account lifecycle headless (**61 checks, all passing** since §10
+`pnpm smoke` now walks the whole account lifecycle headless (**62 checks, all passing** since §10
 extended it to the catalog):
 
 | Check | Live result |
@@ -294,7 +294,7 @@ its groups from `lib/permissions.ts`, which mirrors the backend registry and is 
 | Layer | Command | Needs a backend? | Runs in this sandbox? |
 | --- | --- | --- | --- |
 | Unit / integration (MSW, exact live shapes) | `pnpm test` | no | yes — 13 files / 66 tests |
-| Headless contract + lifecycle | `pnpm smoke` | yes | yes — 61 checks |
+| Headless contract + lifecycle | `pnpm smoke` | yes | yes — 62 checks |
 | Browser end-to-end (`e2e/*.spec.ts`, 10 specs in 3 files) | `pnpm test:e2e` | yes | **no** |
 
 The Playwright specs cover the redirect for anonymous visitors, the wrong-credentials message, sign-in,
@@ -312,7 +312,7 @@ endpoints without a browser, which is why it was extended instead of waiting for
 Every catalog rule below was **observed**, not read off the source: the probes ran against the running
 backend on SQLite (`/tmp/originalpal-server-python/originalpal.db`), created and deleted their own rows,
 and the collections were re-counted to zero afterwards. `lib/types/catalog.ts` and `lib/catalog-rules.ts`
-encode exactly what is in the tables, and `pnpm smoke` re-runs the interesting half of it (61 checks)
+encode exactly what is in the tables, and `pnpm smoke` re-runs the interesting half of it (62 checks)
 so drift fails a command instead of a review.
 
 ### Publication is gated in a fixed order
@@ -346,9 +346,14 @@ Two subtleties the probes settled:
 The call answers `200` with `status: "archived"`, but the product is then **gone from the API**:
 `GET /api/products/?status=archived` → `total: 0`, the unfiltered listing → `0`, `GET /api/products/{id}`
 → `404 RESOURCE_NOT_FOUND`, and a second publish → `404`. So the UI shows an archived product as a
-"not found" state (`ProductDetailNotFound`) instead of pretending it can be listed or restored. Product
-`slug` is **not** unique — two products with the same slug are accepted, so slugs are display values,
-never keys.
+"not found" state (`ProductDetailNotFound`) instead of pretending it can be listed or restored.
+
+Product `slug` is unique **among non-archived products** (`uq_commerce_products_live_slug`, a partial
+unique index): the second create with the same slug answers
+`409 CONFLICT "Product slug or relationship conflicts with existing data"`, and archiving the first
+product frees the slug again. Since archiving deletes the row, that is indistinguishable from an
+ordinary uniqueness check in practice — but it explains why a duplicate create answers `409` with the
+*relationship* wording rather than a slug-specific message.
 
 ### Attribute values are typed JSON, not strings
 

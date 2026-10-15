@@ -18,6 +18,8 @@ These are the fixes that remove workarounds and pre-empt bugs on the backend sid
 | 6 | New accounts are created inactive, including self-registration | **high** | customer registration UX |
 | 7 | `/api/auth/permissions` policy inlining is dead code | low | permission admin UI showing policies |
 | 8 | Order-by-id endpoints are unauthenticated | medium (security review) | guest-order link sharing |
+| 9 | Product `409`s do not say which field conflicted | low | telling a duplicate slug from a bad brand/category |
+| 10 | `ProductCreate` ignores unknown fields | low | silent typos (e.g. `status` on create) |
 
 ---
 
@@ -120,7 +122,13 @@ origin needs a code change.
 ```
 POST /api/auth/login  {"username":"admin"}   → 422
 {"detail":[{"type":"missing","loc":["body","password"],"msg":"Field required","input":{"username":"admin"}}]}
+
+POST /api/products/{id}/skus/{skuId}/stock-adjustments  {"quantity_delta":0,"reason":""}  → 422
+{"detail":[{"type":"value_error","loc":["body","quantity_delta"],"msg":"Value error, quantity_delta must be a non-zero integer", ...}]}
 ```
+
+Both the auth and the catalog endpoints behave the same way, so the catalog added no new shape — it
+just produces this one more often (every blank reason and every zero delta).
 
 Domain exceptions are enveloped by `register_domain_exception_handlers`, but FastAPI's own validation
 errors are not, so clients see two shapes. Bindings must either duplicate the parsing (the frontend does,
@@ -446,6 +454,75 @@ referrers, no open-graph previews of order pages).
 
 ---
 
+## 9. Say which field a product conflict is about
+
+**Evidence** (live):
+
+```
+POST /api/products/  {"title":"Dup B","slug":"<taken>","category_id":"<ok>"}  → 409
+{"success":false,"message":"Product slug or relationship conflicts with existing data",
+ "payload":{"error_code":"CONFLICT","details":{},"status_code":409}}
+```
+
+`details` is empty, so a client cannot tell a duplicate slug from a category/brand that vanished — the
+same message also covers the FK failures. Reactivating an old product with a taken slug and attaching a
+deleted brand look identical.
+
+### `app/infra/repositories/sql/product_repository.py`
+
+```diff
+         try:
+             async with self._sessions.begin() as session:
+                 session.add(model)
+         except IntegrityError as exc:
+-            raise ConflictException("Product slug or relationship conflicts with existing data") from exc
++            if "uq_commerce_products_live_slug" in str(exc.orig):
++                # The partial unique index only covers non-archived products.
++                raise ConflictException("Product slug already exists", field="slug") from exc
++            raise ConflictException("Product slug or relationship conflicts with existing data") from exc
+```
+
+The same guard belongs in `update`. `ConflictException(message, **kwargs)` already forwards keyword
+arguments into `details`, so `field="slug"` is enough — the frontend's `lib/api-error.ts` turns
+`details.field` into `fieldErrors`, which is how every other form in this repo shows its errors inline.
+
+**Frontend impact:** none required; `ProductFormDialog` already renders `fieldErrors.slug` and
+`fieldErrors.brand_id` when the backend sends them.
+
+---
+
+## 10. Forbid unknown fields on `ProductCreate`
+
+**Evidence** (live): `ProductUpdate`, `SkuCreate`, `SkuUpdate` and the other update DTOs all set
+`model_config = ConfigDict(extra="forbid")`, but `ProductCreate` does not — so this succeeds and the
+extra field is silently dropped:
+
+```
+POST /api/products/  {"title":"...","slug":"...","category_id":"...","status":"published"}  → 200
+                                                                          # created as a draft
+```
+
+A client that tries to publish at creation time gets a `200` and a draft product, with nothing telling
+it why. (Publication intentionally has its own endpoint — the fix is to make the refusal loud.)
+
+### `app/interface/dto/product_dto.py`
+
+```diff
+ class ProductCreate(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++
+     title: str
+     slug: str
+     category_id: str
+```
+
+Keep the same for `CategoryCreate`, `BrandCreate` and `AttributeDefinitionCreate`, which have the same
+gap. `ConfigDict` is already imported in this module.
+
+**Frontend impact:** none for correct clients; `lib/types/catalog.ts` only ever sends known fields.
+
+---
+
 ## Smaller notes (no patch)
 
 * **No upper bound on `size`.** `fastapi_pagination.Params` accepts any page size; consider
@@ -457,3 +534,9 @@ referrers, no open-graph previews of order pages).
   decision if customer uploads are added later.
 * **`GET /api/users/` returns full role objects per user**, so the admin list is chatty at larger page
   sizes. A `roles` projection or an include-parameter would help if the list grows.
+* **Product `slug` is unique only while the product is not archived** (`uq_commerce_products_live_slug`),
+  and archiving deletes the row, so the slug is always free afterwards. Worth keeping in mind before a
+  storefront starts treating slugs as permanent, indexable URLs.
+* **`GET /api/products/` can only filter by one category**, not a subtree (`category_id` matches exactly),
+  so a storefront browsing a parent category has to enumerate descendants client-side or ask the public
+  catalog endpoint instead.

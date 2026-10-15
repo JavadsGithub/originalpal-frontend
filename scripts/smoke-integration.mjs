@@ -382,6 +382,17 @@ async function main() {
   expect(product.status === 200, "POST /api/products/ → 200", `got ${product.status}`);
   if (createdProduct?.id) cleanup.push(["product", `/api/products/${createdProduct.id}`]);
 
+  const duplicateSlug = await request("/api/products/", {
+    method: "POST",
+    token,
+    body: { title: `Smoke product ${suffix} again`, slug: `${catalogSuffix}`, category_id: createdCategory?.id },
+  });
+  expect(
+    duplicateSlug.status === 409 && duplicateSlug.json?.payload?.error_code === "CONFLICT",
+    "POST /api/products/ (slug already taken by a non-archived product) → 409 CONFLICT",
+    `got ${duplicateSlug.status} / ${duplicateSlug.json?.payload?.error_code}`,
+  );
+
   // A second definition, answered once per product (this one is a specification, not a variant).
   const specification = await request("/api/attributes/", {
     method: "POST",
