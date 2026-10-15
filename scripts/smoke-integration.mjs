@@ -636,6 +636,506 @@ async function main() {
     `got ${priceLess.status} / field=${priceLess.json?.payload?.details?.field}`,
   );
 
+  // 5e. Storefront browsing — the public, read-only surface a shopper's browser drives.
+  //
+  // Every assertion below runs **anonymous**: `/api/catalog/products/` and `/api/homepage/` are the
+  // only endpoints the storefront is allowed to need. The product used here is the one the back
+  // office just published in 5c, so this section is also the proof that "published with an active SKU"
+  // is what makes a product shopper-visible.
+  const storefrontCleanup = [];
+
+  const publicHomepage = await request("/api/homepage/");
+  expect(
+    publicHomepage.status === 200 && Array.isArray(publicHomepage.json?.payload?.blocks),
+    "GET /api/homepage/ (anonymous) → 200 with a blocks array",
+    `got ${publicHomepage.status}`,
+  );
+  const navigation = publicHomepage.json?.payload?.navigation ?? [];
+  expect(
+    navigation.map((item) => item.href).join(",") ===
+      "/categories,/search,/cart,/account,/blog",
+    "  navigation carries the backend's five storefront entries",
+    JSON.stringify(navigation.map((item) => item.href)),
+  );
+
+  const blocksAnonymous = await request("/api/homepage/blocks/");
+  expect(
+    blocksAnonymous.status === 401 &&
+      blocksAnonymous.json?.payload?.error_code === "CREDENTIALS_VALIDATION_ERROR",
+    "GET /api/homepage/blocks/ (anonymous) → 401 (the management list stays closed)",
+    `got ${blocksAnonymous.status}`,
+  );
+
+  const publicList = await request("/api/catalog/products/?page=1&size=5");
+  const publicItems = publicList.json?.payload?.items ?? [];
+  expect(
+    publicList.status === 200 &&
+      Array.isArray(publicItems) &&
+      typeof publicList.json?.payload?.total === "number",
+    "GET /api/catalog/products/ (anonymous) → 200 with the pagination payload",
+    `got ${publicList.status} / keys=${Object.keys(publicList.json?.payload ?? {}).join(",")}`,
+  );
+  const publicSummaryKeys = [
+    "active_sku_count",
+    "brand_id",
+    "category_id",
+    "gallery",
+    "has_stock",
+    "highlights",
+    "id",
+    "max_price_cents",
+    "min_price_cents",
+    "slug",
+    "summary",
+    "title",
+  ];
+  const summaryKeys = Object.keys(publicItems[0] ?? {}).sort();
+  expect(
+    summaryKeys.join(",") === publicSummaryKeys.join(","),
+    "  the public summary is exactly the 12 documented fields (no cost, no SKUs, no status)",
+    summaryKeys.join(","),
+  );
+
+  const publicDetail = await request(`/api/catalog/products/${createdProduct?.id}`);
+  const publicDetailPayload = publicDetail.json?.payload;
+  expect(
+    publicDetail.status === 200 &&
+      "description" in (publicDetailPayload ?? {}) &&
+      Array.isArray(publicDetailPayload?.skus),
+    "GET /api/catalog/products/{id} (anonymous) → 200, detail adds description + skus",
+    `got ${publicDetail.status}`,
+  );
+  const publicSkuKeys = [
+    "code",
+    "id",
+    "image_gallery",
+    "is_available",
+    "option_values",
+    "price_cents",
+    "stock_quantity",
+  ];
+  const detailSkuKeys = Object.keys(publicDetailPayload?.skus?.[0] ?? {}).sort();
+  expect(
+    detailSkuKeys.join(",") === publicSkuKeys.join(","),
+    "  a public SKU exposes neither cost nor reserved/committed quantities",
+    detailSkuKeys.join(","),
+  );
+
+  // Images: the storefront cannot render a product photo — file downloads are permission-gated.
+  const anonymousImage = await request(`/api/files/${uploadedFile?.id}/download`);
+  expect(
+    anonymousImage.status === 401,
+    "  GET /api/files/{id}/download (anonymous) → 401 — uploaded images are not public (follow-up #15)",
+    `got ${anonymousImage.status}`,
+  );
+
+  const searchBySkuCode = await request(
+    `/api/catalog/products/?page=1&size=5&search=${encodeURIComponent(`${catalogSuffix}-sku`)}`,
+  );
+  expect(
+    (searchBySkuCode.json?.payload?.items ?? []).some((item) => item.id === createdProduct?.id),
+    "  ?search matches a SKU code, not just the title/slug",
+    `matches=${searchBySkuCode.json?.payload?.total}`,
+  );
+
+  const tooLarge = await request("/api/catalog/products/?page=1&size=101");
+  expect(
+    tooLarge.status === 422 &&
+      JSON.stringify(tooLarge.json?.detail ?? "").includes("less_than_equal"),
+    "  ?size=101 → FastAPI 422 less_than_equal (the listing caps size at 100)",
+    `got ${tooLarge.status}`,
+  );
+
+  const zeroPage = await request("/api/catalog/products/?page=0&size=5");
+  expect(
+    zeroPage.status === 422 &&
+      zeroPage.json?.detail?.[0]?.loc?.join(".") === "query.page" &&
+      zeroPage.json?.detail?.[0]?.type === "greater_than_equal",
+    "  ?page=0 → FastAPI 422 detail[0].loc=query.page (both bounds stay pydantic, not the envelope)",
+    `got ${zeroPage.status} / ${JSON.stringify(zeroPage.json?.detail?.[0]?.loc)}`,
+  );
+
+  // Category filtering is an exact match: a product in a child category is invisible while browsing
+  // the parent. The storefront therefore links to the children instead of pretending to cover them.
+  // Categories are added to cleanup last: a category that still has products (or a child) answers 409.
+  const storefrontCategoryCleanup = [];
+  const parentCategory = await request("/api/categories/", {
+    method: "POST",
+    token,
+    body: { name: `Smoke parent ${suffix}`, slug: `${catalogSuffix}-parent`, parent_id: null },
+  });
+  const createdParent = parentCategory.json?.payload;
+  if (createdParent?.id)
+    storefrontCategoryCleanup.push(["category", `/api/categories/${createdParent.id}`]);
+
+  const childCategory = await request("/api/categories/", {
+    method: "POST",
+    token,
+    body: {
+      name: `Smoke child ${suffix}`,
+      slug: `${catalogSuffix}-child`,
+      parent_id: createdParent?.id,
+    },
+  });
+  const createdChild = childCategory.json?.payload;
+  if (createdChild?.id) {
+    // Unshifted: the child has to go before its parent.
+    storefrontCategoryCleanup.unshift(["category", `/api/categories/${createdChild.id}`]);
+  }
+
+  const moved = await request(`/api/products/${createdProduct?.id}`, {
+    method: "PUT",
+    token,
+    body: { category_id: createdChild?.id },
+  });
+  expect(
+    moved.status === 200 && moved.json?.payload?.category_id === createdChild?.id,
+    "PUT /api/products/{id} (move into a child category) → 200",
+    `got ${moved.status}`,
+  );
+
+  const byChild = await request(
+    `/api/catalog/products/?page=1&size=5&category_id=${createdChild?.id}`,
+  );
+  const byParent = await request(
+    `/api/catalog/products/?page=1&size=5&category_id=${createdParent?.id}`,
+  );
+  expect(
+    (byChild.json?.payload?.items ?? []).some((item) => item.id === createdProduct?.id) &&
+      !(byParent.json?.payload?.items ?? []).some((item) => item.id === createdProduct?.id),
+    "  ?category_id does not roll up: the child finds the product, the parent does not (follow-up #14)",
+    `child=${byChild.json?.payload?.total} parent=${byParent.json?.payload?.total}`,
+  );
+
+  // Move the product back so the temporary categories can be deleted in cleanup.
+  await request(`/api/products/${createdProduct?.id}`, {
+    method: "PUT",
+    token,
+    body: { category_id: createdCategory?.id },
+  });
+
+  // A second, out-of-stock SKU: the public numbers are the roll-up over **active** SKUs only.
+  //
+  // The variant's attribute value travels inside `option_values` (keyed by attribute slug) — and it
+  // has to differ from the first SKU's, because `option_signature` is unique per product.
+  const colourSlug = `${catalogSuffix}-colour`;
+  const secondSku = await request(`/api/products/${createdProduct?.id}/skus/`, {
+    method: "POST",
+    token,
+    body: {
+      code: `${catalogSuffix}-sku-alt`,
+      price_cents: 3199,
+      stock_quantity: 0,
+      option_values: { [colourSlug]: "blue" },
+    },
+  });
+  const createdSecondSku = secondSku.json?.payload;
+  expect(
+    secondSku.status === 200 && createdSecondSku?.option_values?.[colourSlug] === "blue",
+    "POST /api/products/{id}/skus/ with option_values → 200 (the variant value ships with the SKU)",
+    `got ${secondSku.status} / ${JSON.stringify(createdSecondSku?.option_values)}`,
+  );
+  if (createdSecondSku?.id) {
+    storefrontCleanup.push([
+      "sku",
+      `/api/products/${createdProduct?.id}/skus/${createdSecondSku.id}`,
+    ]);
+  }
+
+  const duplicateCombination = await request(`/api/products/${createdProduct?.id}/skus/`, {
+    method: "POST",
+    token,
+    body: {
+      code: `${catalogSuffix}-sku-dup`,
+      price_cents: 2500,
+      option_values: { [colourSlug]: "blue" },
+    },
+  });
+  expect(
+    duplicateCombination.status === 409 &&
+      duplicateCombination.json?.payload?.error_code === "CONFLICT",
+    "  the same option combination twice → 409 CONFLICT (option_signature is unique per product)",
+    `got ${duplicateCombination.status} / ${duplicateCombination.json?.payload?.error_code}`,
+  );
+
+  const rolledUp = await request(
+    `/api/catalog/products/?page=1&size=5&search=${encodeURIComponent(catalogSuffix)}`,
+  );
+  const rolledUpItem = (rolledUp.json?.payload?.items ?? []).find(
+    (item) => item.id === createdProduct?.id,
+  );
+  expect(
+    rolledUpItem?.min_price_cents === 1999 &&
+      rolledUpItem?.max_price_cents === 3199 &&
+      rolledUpItem?.has_stock === true &&
+      rolledUpItem?.active_sku_count === 2,
+    "  min/max/has_stock/active_sku_count roll up over the active SKUs (1999–3199, 2 SKUs)",
+    JSON.stringify(rolledUpItem && {
+      min: rolledUpItem.min_price_cents,
+      max: rolledUpItem.max_price_cents,
+      has_stock: rolledUpItem.has_stock,
+      skus: rolledUpItem.active_sku_count,
+    }),
+  );
+
+  // Inline `option_values` bypass `skus/{id}/attribute-values/`' validation entirely.
+  const looseOptionValues = await request(`/api/products/${createdProduct?.id}/skus/`, {
+    method: "POST",
+    token,
+    body: {
+      code: `${catalogSuffix}-sku-loose`,
+      price_cents: 2500,
+      option_values: { "not-an-attribute-slug": "not-an-option" },
+    },
+  });
+  const createdLooseSku = looseOptionValues.json?.payload;
+  expect(
+    looseOptionValues.status === 200 &&
+      createdLooseSku?.option_values?.["not-an-attribute-slug"] === "not-an-option",
+    "  an unknown option slug is stored and served as-is — inline option_values are unvalidated (follow-up #16)",
+    `got ${looseOptionValues.status} / ${JSON.stringify(createdLooseSku?.option_values)}`,
+  );
+  if (createdLooseSku?.id) {
+    const removedLooseSku = await request(
+      `/api/products/${createdProduct?.id}/skus/${createdLooseSku.id}`,
+      { method: "DELETE", token },
+    );
+    if (![200, 204, 404].includes(removedLooseSku.status)) {
+      fail("cleanup DELETE the deliberately loose SKU", `got ${removedLooseSku.status}`);
+    }
+  }
+
+  // Deactivating the only stocked SKU flips the card to sold out without hiding the product.
+  const deactivated = await request(
+    `/api/products/${createdProduct?.id}/skus/${createdSku?.id}`,
+    { method: "PUT", token, body: { is_active: false } },
+  );
+  const afterDeactivate = await request(`/api/catalog/products/${createdProduct?.id}`);
+  expect(
+    deactivated.status === 200 &&
+      afterDeactivate.status === 200 &&
+      afterDeactivate.json?.payload?.min_price_cents === 3199 &&
+      afterDeactivate.json?.payload?.max_price_cents === 3199 &&
+      afterDeactivate.json?.payload?.has_stock === false &&
+      afterDeactivate.json?.payload?.active_sku_count === 1,
+    "  deactivating the stocked SKU → min=max=3199, has_stock false, active_sku_count 1",
+    `${deactivated.status} / ${JSON.stringify(afterDeactivate.json?.payload?.has_stock)}`,
+  );
+
+  // A draft with an active SKU is still invisible; publish is what flips it.
+  const draftProduct = await request("/api/products/", {
+    method: "POST",
+    token,
+    body: {
+      title: `Smoke draft ${suffix}`,
+      slug: `${catalogSuffix}-draft`,
+      category_id: createdChild?.id,
+      brand_id: null,
+    },
+  });
+  const createdDraft = draftProduct.json?.payload;
+  if (createdDraft?.id) {
+    storefrontCleanup.push(["draft-product", `/api/products/${createdDraft.id}`]);
+  }
+  const draftSku = await request(`/api/products/${createdDraft?.id}/skus/`, {
+    method: "POST",
+    token,
+    body: { code: `${catalogSuffix}-draft-sku`, price_cents: 999, stock_quantity: 3 },
+  });
+  if (draftSku.json?.payload?.id) {
+    storefrontCleanup.push([
+      "sku",
+      `/api/products/${createdDraft?.id}/skus/${draftSku.json.payload.id}`,
+    ]);
+  }
+  const draftRead = await request(`/api/catalog/products/${createdDraft?.id}`);
+  const draftListed = await request(
+    `/api/catalog/products/?page=1&size=5&search=${encodeURIComponent(`${catalogSuffix}-draft`)}`,
+  );
+  expect(
+    draftRead.status === 404 &&
+      draftRead.json?.payload?.error_code === "RESOURCE_NOT_FOUND" &&
+      draftListed.json?.payload?.total === 0,
+    "  a draft with an active SKU is neither readable nor listed (404 RESOURCE_NOT_FOUND)",
+    `${draftRead.status} / total=${draftListed.json?.payload?.total}`,
+  );
+
+  // Homepage blocks: what the editor writes is exactly what the storefront renders.
+  const blockOrderLate = await request("/api/homepage/blocks/", {
+    method: "POST",
+    token,
+    body: {
+      block_type: "products",
+      title: `Smoke block late ${suffix}`,
+      target_ids: [createdProduct?.id],
+      display_order: 9,
+      is_active: true,
+    },
+  });
+  const lateBlock = blockOrderLate.json?.payload;
+  if (lateBlock?.id) storefrontCleanup.push(["block", `/api/homepage/blocks/${lateBlock.id}`]);
+
+  const blockOrderEarly = await request("/api/homepage/blocks/", {
+    method: "POST",
+    token,
+    body: {
+      block_type: "products",
+      title: `Smoke block early ${suffix}`,
+      target_ids: [createdProduct?.id],
+      display_order: 1,
+      is_active: true,
+    },
+  });
+  const earlyBlock = blockOrderEarly.json?.payload;
+  if (earlyBlock?.id) storefrontCleanup.push(["block", `/api/homepage/blocks/${earlyBlock.id}`]);
+
+  const inactiveBlock = await request("/api/homepage/blocks/", {
+    method: "POST",
+    token,
+    body: {
+      block_type: "products",
+      title: `Smoke block inactive ${suffix}`,
+      target_ids: [createdProduct?.id],
+      display_order: 2,
+      is_active: false,
+    },
+  });
+  expect(
+    inactiveBlock.status === 200 && inactiveBlock.json?.payload?.is_active === false,
+    "POST /api/homepage/blocks/ is_active:false → 200 (an editor can stage a block)",
+    `got ${inactiveBlock.status}`,
+  );
+  if (inactiveBlock.json?.payload?.id) {
+    storefrontCleanup.push(["block", `/api/homepage/blocks/${inactiveBlock.json.payload.id}`]);
+  }
+
+  const ghostBlock = await request("/api/homepage/blocks/", {
+    method: "POST",
+    token,
+    body: {
+      block_type: "products",
+      title: `Smoke ghost block ${suffix}`,
+      // Deliberately unknown: the API stores what it is given.
+      target_ids: ["00000000-0000-4000-8000-000000000000"],
+      display_order: 3,
+      is_active: true,
+    },
+  });
+  if (ghostBlock.json?.payload?.id) {
+    storefrontCleanup.push(["block", `/api/homepage/blocks/${ghostBlock.json.payload.id}`]);
+  }
+
+  const badBlockType = await request("/api/homepage/blocks/", {
+    method: "POST",
+    token,
+    body: { block_type: "carousel", title: `Smoke bad type ${suffix}` },
+  });
+  expect(
+    badBlockType.status === 422 &&
+      badBlockType.json?.payload?.details?.field === "block_type",
+    "POST /api/homepage/blocks/ (unknown block_type) → 422 field=block_type",
+    `got ${badBlockType.status} / field=${badBlockType.json?.payload?.details?.field}`,
+  );
+
+  const bannerWithoutUrls = await request("/api/homepage/blocks/", {
+    method: "POST",
+    token,
+    body: { block_type: "banner", title: `Smoke banner ${suffix}`, image_url: "https://x/y.png" },
+  });
+  expect(
+    bannerWithoutUrls.status === 422 &&
+      bannerWithoutUrls.json?.payload?.details?.field === "image_url" &&
+      /image and target URLs/.test(bannerWithoutUrls.json?.message ?? ""),
+    "POST /api/homepage/blocks/ (banner without target_url) → 422 field=image_url (both URLs required)",
+    `got ${bannerWithoutUrls.status} / ${bannerWithoutUrls.json?.message}`,
+  );
+
+  const targetlessBlock = await request("/api/homepage/blocks/", {
+    method: "POST",
+    token,
+    body: { block_type: "categories", title: `Smoke categories ${suffix}` },
+  });
+  expect(
+    targetlessBlock.status === 422 && targetlessBlock.json?.payload?.details?.field === "target_ids",
+    "  products/categories are 'curated' blocks: an empty target_ids → 422 field=target_ids",
+    `got ${targetlessBlock.status} / field=${targetlessBlock.json?.payload?.details?.field}`,
+  );
+
+  const blankTitle = await request("/api/homepage/blocks/", {
+    method: "POST",
+    token,
+    body: { block_type: "banner", title: "   " },
+  });
+  expect(
+    blankTitle.status === 422 && blankTitle.json?.payload?.details?.field === "title",
+    "  blank title → 422 field=title",
+    `got ${blankTitle.status} / field=${blankTitle.json?.payload?.details?.field}`,
+  );
+
+  const feedAfterBlocks = await request("/api/homepage/");
+  const feedBlocks = feedAfterBlocks.json?.payload?.blocks ?? [];
+  const feedTitles = feedBlocks.map((block) => block.title);
+  expect(
+    feedTitles.includes(`Smoke block late ${suffix}`) &&
+      feedTitles.includes(`Smoke block early ${suffix}`),
+    "GET /api/homepage/ (anonymous) → the new active blocks appear in the public feed",
+    `${feedBlocks.length} block(s)`,
+  );
+  expect(
+    !feedBlocks.some((block) => block.title === `Smoke block inactive ${suffix}`),
+    "  is_active:false is excluded from the public feed",
+    `${feedBlocks.length} block(s)`,
+  );
+  expect(
+    feedBlocks.some((block) => block.title === `Smoke ghost block ${suffix}`) &&
+      (feedBlocks.find((block) => block.title === `Smoke ghost block ${suffix}`)?.target_ids ?? [])
+        .length === 1,
+    "  an unknown target_ids value is published as-is — nothing validates it (follow-up #13)",
+    "ghost block served to the storefront",
+  );
+
+  // The feed is ordered by `display_order` (then created_at, id) — the late block was created first and
+  // must still come after the early one.
+  const lateIndex = feedTitles.indexOf(`Smoke block late ${suffix}`);
+  const earlyIndex = feedTitles.indexOf(`Smoke block early ${suffix}`);
+  expect(
+    lateIndex !== -1 && earlyIndex !== -1 && earlyIndex < lateIndex,
+    "  the public feed is ordered by display_order (created last, ordered first: 1 before 9)",
+    `early=${earlyIndex} late=${lateIndex}`,
+  );
+
+  const clearedSubtitle = await request(`/api/homepage/blocks/${earlyBlock?.id}`, {
+    method: "PUT",
+    token,
+    body: { subtitle: null },
+  });
+  expect(
+    clearedSubtitle.status === 200 &&
+      clearedSubtitle.json?.payload?.subtitle === null &&
+      clearedSubtitle.json?.payload?.title === `Smoke block early ${suffix}`,
+    "PUT /api/homepage/blocks/{id} {subtitle:null} → 200, subtitle cleared, title kept",
+    `got ${clearedSubtitle.status}`,
+  );
+
+  const nullTitle = await request(`/api/homepage/blocks/${earlyBlock?.id}`, {
+    method: "PUT",
+    token,
+    body: { title: null },
+  });
+  expect(
+    nullTitle.status === 422,
+    "  explicit title:null → 422 (the update schema rejects null for required fields)",
+    `got ${nullTitle.status}`,
+  );
+
+  // Cleanup, in dependency order, so a re-run starts from the same state.
+  for (const [what, path] of [...storefrontCleanup, ...storefrontCategoryCleanup]) {
+    const removed = await request(path, { method: "DELETE", token });
+    if (![200, 204, 404].includes(removed.status)) {
+      fail(`cleanup DELETE ${what} ${path}`, `got ${removed.status}`);
+    }
+  }
+
   // Archiving hides the product completely: it answers 404 afterwards.
   const archived = await request(`/api/products/${createdProduct?.id}`, { method: "DELETE", token });
   expect(

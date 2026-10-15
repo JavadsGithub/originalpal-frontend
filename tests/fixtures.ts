@@ -7,6 +7,12 @@ import type {
   Sku,
 } from "@/lib/types/catalog";
 import type { CustomerAddress } from "@/lib/types/customer";
+import type {
+  HomepageBlock,
+  PublicHomepage,
+  PublicProductDetail,
+  PublicProductSummary,
+} from "@/lib/types/storefront";
 import type { Role, TokenResponse, User } from "@/lib/types/auth";
 
 /** Where the client points in tests (see `vitest.config.ts` → `test.env`). */
@@ -204,3 +210,84 @@ export function sessionExpired(
     ),
   );
 }
+
+// ---------------------------------------------------------------------------
+// Storefront fixtures — copied from live `GET /api/catalog/products/` and
+// `GET /api/homepage/` responses (audit §12)
+// ---------------------------------------------------------------------------
+
+export const publicProductFixture: PublicProductSummary = {
+  id: "7c9f2f6e-0f5a-4a1f-9a2f-2f6e0f5a4a1f",
+  title: "Probe Product",
+  slug: "probe-product",
+  category_id: categoryFixture.id,
+  brand_id: null,
+  summary: "A probe product",
+  highlights: ["Hand forged"],
+  gallery: ["8f14e45f-ceea-467f-a1f0-2b4c3d4e5f60"],
+  min_price_cents: 2599,
+  max_price_cents: 3199,
+  has_stock: true,
+  active_sku_count: 2,
+};
+
+export const publicProductDetailFixture: PublicProductDetail = {
+  ...publicProductFixture,
+  description: "A longer description of the probe product.",
+  skus: [
+    {
+      id: "3f1c2b4a-1111-4222-8333-444455556666",
+      code: "PROBE-S",
+      option_values: { size: "S" },
+      price_cents: 2599,
+      stock_quantity: 4,
+      image_gallery: [],
+      is_available: true,
+    },
+    {
+      id: "5a2d3c4b-7777-4888-8999-aaaabbbbcccc",
+      code: "PROBE-L",
+      option_values: { size: "L" },
+      price_cents: 3199,
+      stock_quantity: 0,
+      image_gallery: [],
+      is_available: false,
+    },
+  ],
+};
+
+/** A `products` block — the shape `POST /api/homepage/blocks/` accepts and returns. */
+export const homepageBlockFixture: HomepageBlock = {
+  id: "b1a2c3d4-5555-4666-8777-888899990000",
+  block_type: "products",
+  title: "Probe products",
+  subtitle: "Handpicked",
+  image_url: null,
+  target_url: "/search",
+  target_ids: [publicProductFixture.id],
+  display_order: 1,
+  is_active: true,
+  created_at: "2026-10-16T06:52:31.607654Z",
+  updated_at: "2026-10-16T06:52:31.607654Z",
+};
+
+/** The block the probe created with an id that resolves to nothing — the API accepts it happily. */
+export const danglingHomepageBlockFixture: HomepageBlock = {
+  ...homepageBlockFixture,
+  id: "c2b3d4e5-6666-4777-8888-999900001111",
+  title: "Ghost block",
+  target_ids: ["11111111-2222-4333-8444-555566667777"],
+  display_order: 0,
+};
+
+/** `GET /api/homepage/` — the five navigation entries are hardcoded on the backend. */
+export const publicHomepageFixture: PublicHomepage = {
+  blocks: [homepageBlockFixture],
+  navigation: [
+    { label: "Categories", href: "/categories" },
+    { label: "Search", href: "/search" },
+    { label: "Cart", href: "/cart" },
+    { label: "Account", href: "/account" },
+    { label: "Blog", href: "/blog" },
+  ],
+};

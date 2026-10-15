@@ -40,6 +40,31 @@ export const customerKeys = {
   },
 };
 
+/**
+ * Storefront keys — the public read endpoints (`/api/catalog/products/`, `/api/homepage/`).
+ *
+ * Kept apart from the catalog keys on purpose: the public catalog is a different projection of the
+ * same rows (published only, active SKUs only), so sharing a cache entry would show admins the wrong
+ * shape.
+ */
+export const storefrontKeys = {
+  all: ["storefront"] as const,
+
+  homepage: () => [...storefrontKeys.all, "homepage"] as const,
+
+  products: {
+    all: () => [...storefrontKeys.all, "products"] as const,
+    list: (params: {
+      page: number;
+      size: number;
+      search?: string;
+      categoryId?: string;
+      brandId?: string;
+    }) => [...storefrontKeys.products.all(), "list", params] as const,
+    detail: (id: string) => [...storefrontKeys.products.all(), "detail", id] as const,
+  },
+};
+
 export const systemKeys = {
   all: ["system"] as const,
   backendHealth: () => [...systemKeys.all, "backend-health"] as const,
