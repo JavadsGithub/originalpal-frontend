@@ -1,5 +1,11 @@
 import { HttpResponse, http } from "msw";
 import type { PaginatedPayload } from "@/lib/types/api";
+import type {
+  AttributeDefinition,
+  Category,
+  Product,
+  Sku,
+} from "@/lib/types/catalog";
 import type { Role, TokenResponse, User } from "@/lib/types/auth";
 
 /** Where the client points in tests (see `vitest.config.ts` → `test.env`). */
@@ -37,6 +43,66 @@ export const accessToken: TokenResponse = {
   token: "test-jwt-token",
   type: "bearer",
   expires_at: "2026-10-15T18:26:54.211451Z",
+};
+
+// ---------------------------------------------------------------------------
+// Catalog fixtures — same field-for-field approach as the auth ones
+// ---------------------------------------------------------------------------
+
+export const categoryFixture: Category = {
+  id: "1a718486-a104-4f91-8b67-da8fa1e1de0d",
+  name: "Kitchen knives",
+  slug: "kitchen-knives",
+  parent_id: null,
+  created_at: "2026-10-15T18:23:19.999935Z",
+  updated_at: "2026-10-15T18:23:19.999935Z",
+};
+
+export const attributeDefinitionFixture: AttributeDefinition = {
+  id: "f50785b0-39d1-4846-9419-7fcfed486090",
+  name: "Colour",
+  slug: "colour",
+  value_type: "single_choice",
+  unit: null,
+  choices: ["red", "blue"],
+  is_specification: false,
+  is_filterable: false,
+  is_variant: true,
+  display_order: 1,
+  group: "Appearance",
+  created_at: "2026-10-15T18:23:20.000000Z",
+  updated_at: "2026-10-15T18:23:20.000000Z",
+};
+
+export const productFixture: Product = {
+  id: "dad1907d-5cc0-4c92-b2c7-68d8d7be3ed7",
+  title: "Chef knife",
+  slug: "chef-knife",
+  category_id: categoryFixture.id,
+  brand_id: null,
+  summary: "A knife.",
+  description: "A very good knife.",
+  highlights: ["Hand forged"],
+  gallery: ["uploads/k1.jpg"],
+  status: "draft",
+  created_at: "2026-10-15T18:23:20.100000Z",
+  updated_at: "2026-10-15T18:23:20.100000Z",
+};
+
+export const skuFixture: Sku = {
+  id: "8e4c1d0b-4f4a-4a1f-9c0a-1d2f3a4b5c6d",
+  product_id: productFixture.id,
+  code: "CHEF-20",
+  option_values: { size: "20cm" },
+  price_cents: 129900,
+  stock_quantity: 8,
+  reserved_quantity: 2,
+  committed_quantity: 0,
+  available_quantity: 6,
+  image_gallery: [],
+  is_active: true,
+  created_at: "2026-10-15T18:23:20.200000Z",
+  updated_at: "2026-10-15T18:23:20.200000Z",
 };
 
 export function pageOf<T>(items: T[], overrides: Partial<PaginatedPayload<T>> = {}) {

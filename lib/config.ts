@@ -36,4 +36,12 @@ export const USES_API_PROXY = PUBLIC_API_BASE_URL.startsWith("/");
 
 export const APP_NAME = "Original Pal";
 
+/**
+ * Currency used to render `price_cents` values.
+ *
+ * The backend stores amounts as integer cents with **no** currency attached, so this is purely a
+ * display decision (`NEXT_PUBLIC_CURRENCY`, default EUR). Prices are never converted.
+ */
+export const CURRENCY = process.env.NEXT_PUBLIC_CURRENCY?.trim() || "EUR";
+
 export const isDevelopment = process.env.NODE_ENV === "development";

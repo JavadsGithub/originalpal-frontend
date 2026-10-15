@@ -32,7 +32,7 @@ Seeded backend account: **`admin` / `Secret123`** (super user → bypasses every
 Verify the integration at any time:
 
 ```bash
-pnpm smoke        # login → me → permissions → users → refresh → logout, through the proxy
+pnpm smoke        # login → me → permissions → users → catalog → refresh → logout, through the proxy
 pnpm check        # typecheck + lint + permission-registry drift check
 ```
 
@@ -95,7 +95,7 @@ In short:
 | `pnpm permissions:sync -- --from ../originalpal-server-python/statics/permissions.json` | refresh the snapshot from the backend, then regenerate |
 | `pnpm permissions:check` | fail if the generated registry is stale (CI gate) |
 | `pnpm api:generate` | orval client generation from `OPENAPI_JSON_URL` (output in git-ignored `lib/api`) |
-| `pnpm smoke` | end-to-end contract check through the proxy against the live backend |
+| `pnpm smoke` | end-to-end contract check through the proxy against the live backend: auth lifecycle, RBAC, pagination, and the catalog (upload → product → SKU → publish gates → archive) |
 
 ## Testing
 
@@ -104,7 +104,7 @@ Three layers, from fastest to most convincing:
 | Layer | Command | What it proves |
 | --- | --- | --- |
 | Unit / integration | `pnpm test` | the client layer against MSW replicas of live responses: envelope unwrapping, 401→refresh→replay, 422 normalisation, permission gates, table behaviour |
-| Headless contract | `pnpm smoke` | the real stack — browser-facing contract → `/api/*` proxy → FastAPI. Also walks the full account lifecycle (create inactive → activate → assign role → delete) |
+| Headless contract | `pnpm smoke` | the real stack — browser-facing contract → `/api/*` proxy → FastAPI. Walks the account lifecycle (create inactive → activate → assign role → delete) and the catalog lifecycle (upload → category/attribute links → product → SKU → the three publish gates → archive), cleaning up after itself |
 | Browser end-to-end | `pnpm test:e2e` | the same flows *through the UI*, including session restore after a reload |
 
 `pnpm test:e2e` needs a browser: `pnpm exec playwright install chromium`, a running backend with seed
@@ -119,16 +119,42 @@ the Playwright browser CDN, use `pnpm smoke` — it covers the same endpoints wi
 | --- | --- | --- |
 | `/admin/users` | `GET/POST /api/users/`, `PUT/DELETE /api/users/{id}`, `POST|DELETE /api/users/{id}/roles/{roleId}` | `users:read`, with per-action gates on `users:create|update|delete|assign_role|unassign_role` |
 | `/admin/roles` | `GET/POST /api/roles/`, `PUT/DELETE /api/roles/{id}`, `POST|DELETE /api/roles/{id}/permissions/{permissionId}` | `roles:read`, with per-action gates on `roles:create|update|delete|assign_permission|unassign_permission` |
+| `/admin/catalog/products` | `GET/POST /api/products/`, `PUT/DELETE /api/products/{id}`, `POST /api/products/{id}/{publish,unpublish}` | reads are public; `products:create|update|publish|unpublish|delete` gate each action |
+| `/admin/catalog/products/{id}` | product detail: publish checklist, SKUs, attribute values | per-action gates on `skus:*` and `attribute-values:*` |
+| `/admin/catalog/categories` | `GET/POST /api/categories/`, `PUT/DELETE /api/categories/{id}`, `…/attributes/` links | reads are public; `categories:*` and `category-attributes:*` gate each action |
+| `/admin/catalog/brands` | `GET/POST /api/brands/`, `PUT/DELETE /api/brands/{id}` | reads are public; `brands:*` gate each action |
+| `/admin/catalog/attributes` | `GET/POST /api/attributes/`, `PUT/DELETE /api/attributes/{id}` | reads are public; `attributes:*` gate each action |
+| `/admin/catalog/media` | `GET /api/files`, `POST /api/upload`, `DELETE /api/files/{id}` | `uploads:read` for the screen itself, plus `uploads:create|delete|download` per action |
 
 New accounts are created **inactive** (backend behaviour) — the UI says so and activation is one click
 (`PUT /api/users/{id}` `{is_active:true}`).
 
+### Catalog behaviour worth knowing before touching it
+
+All of it is probed live and written up in
+[§10 of the contract audit](docs/integration/contract-audit.md):
+
+* **Publication has three gates, in order** — gallery, an active SKU, then the required attribute
+  values (including the ones inherited from parent categories). `PublishChecklist` mirrors them so the
+  admin sees why a product is blocked, but `POST /api/products/{id}/publish` is still the authority.
+* **Archiving removes the product from the API.** `DELETE /api/products/{id}` returns
+  `status: "archived"` and then `GET /api/products/{id}` answers `404` — the detail page renders that
+  as a "not found" state. Product slugs are not unique.
+* **Attribute values are typed JSON**, validated against the definition: numbers must be numbers,
+  choices must come from `choices`, and a `sku`-level attribute cannot be answered on the product.
+  `lib/types/catalog.ts` + `AttributeValueField` encode this; the dialogs send typed values.
+* **Attribute links decide the level.** A variant attribute may only be linked at `value_level: "sku"`;
+  the SKU dialog offers all non-`product` links, the product panel the rest.
+* There is no public URL for an uploaded file: images are served through
+  `GET /api/files/{id}/download` (`uploads:download`), so previews need that permission.
+
 ## Roadmap
 
-The backend exposes 114 operations; the frontend consumes auth, users and roles. Next slices, in the
-order the audit suggests:
+The backend exposes 114 operations; the frontend consumes auth, users, roles and the catalog back
+office. Next slices, in the order the audit suggests:
 
 1. ~~Admin back-office: users + roles + permission pickers~~ — done (§9 of the audit).
-2. Catalog management: products, SKUs, categories, attributes, brands (+ uploads for images).
+2. ~~Catalog management: products, SKUs, categories, attributes, brands (+ uploads for images)~~ — done
+   (§10 of the audit).
 3. Storefront: public catalog, homepage blocks, cart, checkout, orders, customer addresses.
 4. Customer account: register, profile update, password recovery.

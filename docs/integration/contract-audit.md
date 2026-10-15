@@ -262,7 +262,8 @@ slices; nothing in the auth/RBAC path depends on them.
 The screens added after the first audit (`/admin/users`, `/admin/roles`) were checked the same way:
 against the running backend, never against fixtures.
 
-`pnpm smoke` now walks the whole account lifecycle headless (**30 checks, all passing**):
+`pnpm smoke` now walks the whole account lifecycle headless (**61 checks, all passing** since §10
+extended it to the catalog):
 
 | Check | Live result |
 | --- | --- |
@@ -292,13 +293,110 @@ its groups from `lib/permissions.ts`, which mirrors the backend registry and is 
 
 | Layer | Command | Needs a backend? | Runs in this sandbox? |
 | --- | --- | --- | --- |
-| Unit / integration (MSW, exact live shapes) | `pnpm test` | no | yes — 8 files / 42 tests |
-| Headless contract + lifecycle | `pnpm smoke` | yes | yes — 30 checks |
-| Browser end-to-end (`e2e/*.spec.ts`, 8 specs) | `pnpm test:e2e` | yes | **no** |
+| Unit / integration (MSW, exact live shapes) | `pnpm test` | no | yes — 13 files / 66 tests |
+| Headless contract + lifecycle | `pnpm smoke` | yes | yes — 61 checks |
+| Browser end-to-end (`e2e/*.spec.ts`, 10 specs in 3 files) | `pnpm test:e2e` | yes | **no** |
 
 The Playwright specs cover the redirect for anonymous visitors, the wrong-credentials message, sign-in,
-session restore after a reload (exercises the silent `POST /api/auth/refresh`), sign-out, and the
-create → activate → assign-role → delete lifecycle *through the UI*. They are type-checked, linted and
+session restore after a reload (exercises the silent `POST /api/auth/refresh`), sign-out, the
+create → activate → assign-role → delete lifecycle *through the UI*, and the catalog lifecycle
+(category → product → SKU → the publish-gate checklist → archive → delete). They are type-checked, linted and
 `--list`-verified here, but `pnpm exec playwright install chromium` needs `cdn.playwright.dev`, which this
 sandbox blocks — run them on a machine with browser downloads enabled. `pnpm smoke` is the same
 endpoints without a browser, which is why it was extended instead of waiting for one.
+
+---
+
+## 10. Addendum — the catalog slice, probed on the live server
+
+Every catalog rule below was **observed**, not read off the source: the probes ran against the running
+backend on SQLite (`/tmp/originalpal-server-python/originalpal.db`), created and deleted their own rows,
+and the collections were re-counted to zero afterwards. `lib/types/catalog.ts` and `lib/catalog-rules.ts`
+encode exactly what is in the tables, and `pnpm smoke` re-runs the interesting half of it (61 checks)
+so drift fails a command instead of a review.
+
+### Publication is gated in a fixed order
+
+`POST /api/products/{id}/publish` takes **no body**. It returns `422` with `payload.details.field`
+naming the *first* failed gate, in this order:
+
+| Order | `details.field` | Message | When |
+| --- | --- | --- | --- |
+| 1 | `gallery` | `Product requires a primary image before publication` | `gallery` is empty |
+| 2 | `skus` | `Product requires at least one active SKU before publication` | no active SKU |
+| 3 | `attribute_values` | `Required product attribute value is missing` / `Required SKU attribute value is missing` / `Required product or SKU attribute value is missing` | a required link along the category lineage has no value |
+
+Passing all three returns `200` with `status: "published"`; `POST /api/products/{id}/unpublish` returns
+`200` with `status: "draft"`. `PublishChecklist` states the same three rules before the click (the
+checklist is a mirror, the endpoint stays the authority) and points at the product page's own panels.
+
+Two subtleties the probes settled:
+
+* **Required means "inherited too".** `GET /api/categories/{id}/attributes/` returns
+  `{item, inherited, source_category_id}` entries and a parent's required link constrains the child's
+  products, so the checklist walks the whole lineage rather than the category's own rows only.
+* **`product_or_sku` is satisfied once, by either side.** A variant attribute (`is_variant: true`) may
+  only be linked at `value_level: "sku"` — the backend refuses `product_or_sku` for it with
+  `422 field=value_level` (`"Variant attributes must be supplied per SKU"`). That is why
+  `SkuAttributeValuesDialog` filters `value_level !== "product"` and the product panel leaves `sku`
+  links alone.
+
+### `DELETE /api/products/{id}` archives *and* removes
+
+The call answers `200` with `status: "archived"`, but the product is then **gone from the API**:
+`GET /api/products/?status=archived` → `total: 0`, the unfiltered listing → `0`, `GET /api/products/{id}`
+→ `404 RESOURCE_NOT_FOUND`, and a second publish → `404`. So the UI shows an archived product as a
+"not found" state (`ProductDetailNotFound`) instead of pretending it can be listed or restored. Product
+`slug` is **not** unique — two products with the same slug are accepted, so slugs are display values,
+never keys.
+
+### Attribute values are typed JSON, not strings
+
+`AttributeValueCreate.value` is free-form on the wire and validated against the definition:
+
+| `value_type` | Accepted JSON | Live refusal |
+| --- | --- | --- |
+| `text` | non-empty string | `422 field=value` "Text attribute values must be non-empty text" |
+| `number` | JSON number (a `"250"` *string* is refused) | `422 field=value` "Number attribute values must be numeric" |
+| `boolean` | real boolean | `422 field=value` |
+| `single_choice` | a string **from `choices`** | `422 field=value` "…must be one of the allowed choices" |
+| `multiple_choice` | non-empty, unique list from `choices` | `422 field=value` |
+
+This closes the open question from the earlier probe round: values **are** checked against the
+definition's `choices`. `AttributeValueField`/`AttributeValueEditor` therefore submit typed drafts
+(`draftToAttributeValue`) and offer only the definition's own choices, so the UI cannot produce a value
+the backend rejects. Value scope is enforced too: a `sku`-level link refuses a product-scope value
+(`422 field=sku_id` "Attribute value must be supplied per SKU") and vice versa.
+
+### The rest of the catalog, as observed
+
+| Rule | Live result |
+| --- | --- |
+| `POST /api/categories/`, `POST /api/brands/` | `200`; duplicate `slug` → `409 CONFLICT` |
+| `DELETE /api/categories/{id}` with children | `409` "Move or delete child categories before deleting this category" |
+| unknown `parent_id` | `404 RESOURCE_NOT_FOUND` |
+| `parent_id` filter, `parent_id=null` | both accepted (roots selectable) |
+| `POST /api/attributes/` with no purpose flag | `422 field=purpose` "Choose at least one attribute purpose" |
+| text attribute `is_filterable: true` | `422 field=is_filterable` (text is descriptive-only in MVP) |
+| `choices` on a non-choice type / `unit` on a non-number | `422` on the offending field |
+| variant attribute without choices, or not `single_choice` | `422 field=choices` / `422` |
+| `slug` outside `[^\W_]+(-[^\W_]+)*`, or duplicate | `422 field=slug` / `409` |
+| `POST /api/categories/{id}/attributes/` duplicate link | `409` |
+| `POST /api/products/{id}/skus/` duplicate `code` or identical option set | `409` |
+| `price_cents: 0` | `422 payload.details.field=price_cents` "SKU price must be greater than zero" |
+| `POST …/stock-adjustments` `quantity_delta: 0` | **FastAPI** `422` (`{detail:[…]}`, `["body","quantity_delta"]`) — not the envelope |
+| blank `reason` / oversell | FastAPI `422 ["body","reason"]` / `422 field=stock_quantity_after` |
+| `PUT /api/products/{id}/skus/{skuId}` partial | accepted; unchanged `stock_quantity` preserved, `null` on a required field → `422` "Omit this field to preserve the existing value" |
+| `DELETE /api/products/{id}/skus/{skuId}` | `200` with `is_active: false`; the SKU then leaves `GET …/skus/` |
+| `GET /api/products/?status=…` with an unknown value | FastAPI `422` (enum is `draft\|published\|archived`) |
+| `GET /api/files` (no trailing slash) anonymously | `401` — the whole uploads group is permission-gated, unlike the public catalog reads |
+| `POST /api/upload` (multipart `file`) | `201` — the only `201` in the API |
+
+### Verified-not-changed
+
+The catalog changed nothing about the shared contract: envelope, pagination shape (`{items,total,page,
+size,pages}`), trailing-slash convention and the `{detail:[…]}`-vs-envelope split for `422`s all behave
+as documented in §3 and §6. One detail worth repeating because the catalog shows it constantly: a
+**domain** `422` arrives inside the envelope with `payload.details.field`, while a **request-shape**
+`422` (FastAPI/Pydantic, e.g. `quantity_delta: 0`) arrives as `{detail:[…]}` — `lib/api-error.ts`
+normalises both into `fieldErrors`, which the catalog dialogs render inline.

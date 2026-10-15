@@ -3,8 +3,8 @@
  * End-to-end integration smoke test: browser-facing contract → Next.js proxy → FastAPI backend.
  *
  * It asserts the things that break first when the two projects drift apart: the response
- * envelope, the login/refresh/logout cookie lifecycle, the access-token flow, the RBAC payload, and
- * the pagination shape.
+ * envelope, the login/refresh/logout cookie lifecycle, the access-token flow, the RBAC payload, the
+ * pagination shape, and the catalog lifecycle (upload → product → SKU → publish → archive).
  *
  * Prerequisites: the backend is running (default http://127.0.0.1:8004) and this app is serving
  * through its dev/production server so the `/api/*` proxy is active.
@@ -278,6 +278,381 @@ async function main() {
       "DELETE /api/users/{id} → cleanup",
       `got ${deleted.status}`,
     );
+  }
+
+  // 5c. Catalog lifecycle — the same calls the back-office screens make, headless.
+  //
+  // The catalog reads are public, everything else is permission-gated, and publication is the one
+  // operation whose three gates are worth asserting (each 422 carries `details.field`, which the
+  // product page's checklist mirrors).
+  for (const [path, what] of [
+    ["/api/products/?page=1&size=1", "products"],
+    ["/api/categories/?page=1&size=1", "categories"],
+    ["/api/brands/?page=1&size=1", "brands"],
+    ["/api/attributes/?page=1&size=1", "attributes"],
+  ]) {
+    const publicRead = await request(path);
+    expect(
+      publicRead.status === 200 && Array.isArray(publicRead.json?.payload?.items),
+      `GET ${path} → 200 paginated without a token`,
+      `got ${publicRead.status} for ${what}`,
+    );
+  }
+
+  const filesAnonymous = await request("/api/files");
+  expect(
+    filesAnonymous.status === 401,
+    "GET /api/files → 401 anonymously (upload endpoints are gated, and this one has no trailing slash)",
+    `got ${filesAnonymous.status}`,
+  );
+
+  const catalogSuffix = `smoke-${suffix}-catalog`;
+  const cleanup = [];
+
+  const uploadResponse = await fetch(`${BASE_URL}/api/upload`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: (() => {
+      const form = new FormData();
+      // 1x1 transparent PNG.
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AARAAE/wD7uLzAAAAAAElFTkSuQmCC",
+        "base64",
+      );
+      form.append("file", new Blob([png], { type: "image/png" }), "smoke.png");
+      return form;
+    })(),
+  });
+  const uploaded = { status: uploadResponse.status, json: await uploadResponse.json().catch(() => null) };
+  const uploadedFile = uploaded.json?.payload;
+  expect(
+    uploaded.status === 201 && Boolean(uploadedFile?.id),
+    "POST /api/upload (multipart) → 201 with the file record",
+    `got ${uploaded.status}`,
+  );
+  if (uploadedFile?.id) cleanup.push(["file", `/api/files/${uploadedFile.id}`]);
+
+  const category = await request("/api/categories/", {
+    method: "POST",
+    token,
+    body: { name: `Smoke category ${suffix}`, slug: `${catalogSuffix}`, parent_id: null },
+  });
+  const createdCategory = category.json?.payload;
+  expect(category.status === 200, "POST /api/categories/ → 200", `got ${category.status}`);
+  if (createdCategory?.id) cleanup.push(["category", `/api/categories/${createdCategory.id}`]);
+
+  const attribute = await request("/api/attributes/", {
+    method: "POST",
+    token,
+    body: {
+      name: `Smoke colour ${suffix}`,
+      slug: `${catalogSuffix}-colour`,
+      // A definition needs at least one purpose flag, and a variant must be a single choice.
+      value_type: "single_choice",
+      choices: ["red", "blue"],
+      is_variant: true,
+    },
+  });
+  const createdAttribute = attribute.json?.payload;
+  expect(attribute.status === 200, "POST /api/attributes/ → 200", `got ${attribute.status}`);
+  if (createdAttribute?.id) cleanup.push(["attribute", `/api/attributes/${createdAttribute.id}`]);
+
+  const purposeless = await request("/api/attributes/", {
+    method: "POST",
+    token,
+    body: { name: `No purpose ${suffix}`, slug: `${catalogSuffix}-nopurpose`, value_type: "text" },
+  });
+  expect(
+    purposeless.status === 422 && purposeless.json?.payload?.details?.field === "purpose",
+    "POST /api/attributes/ (no purpose flag) → 422 field=purpose",
+    `got ${purposeless.status}`,
+  );
+
+  const product = await request("/api/products/", {
+    method: "POST",
+    token,
+    body: {
+      title: `Smoke product ${suffix}`,
+      slug: `${catalogSuffix}`,
+      category_id: createdCategory?.id,
+      brand_id: null,
+    },
+  });
+  const createdProduct = product.json?.payload;
+  expect(product.status === 200, "POST /api/products/ → 200", `got ${product.status}`);
+  if (createdProduct?.id) cleanup.push(["product", `/api/products/${createdProduct.id}`]);
+
+  // A second definition, answered once per product (this one is a specification, not a variant).
+  const specification = await request("/api/attributes/", {
+    method: "POST",
+    token,
+    body: {
+      name: `Smoke weight ${suffix}`,
+      slug: `${catalogSuffix}-weight`,
+      value_type: "number",
+      unit: "g",
+      is_specification: true,
+    },
+  });
+  const createdSpecification = specification.json?.payload;
+  expect(specification.status === 200, "POST /api/attributes/ (number + unit) → 200", `got ${specification.status}`);
+  if (createdSpecification?.id) {
+    cleanup.push(["attribute", `/api/attributes/${createdSpecification.id}`]);
+  }
+
+  // A variant attribute may only be linked per SKU — the backend says so explicitly.
+  const wrongLevel = await request(`/api/categories/${createdCategory?.id}/attributes/`, {
+    method: "POST",
+    token,
+    body: {
+      attribute_definition_id: createdAttribute?.id,
+      is_required: true,
+      value_level: "product_or_sku",
+    },
+  });
+  expect(
+    wrongLevel.status === 422 && wrongLevel.json?.payload?.details?.field === "value_level",
+    "POST /api/categories/{id}/attributes/ (variant at product_or_sku) → 422 field=value_level",
+    `got ${wrongLevel.status} / field=${wrongLevel.json?.payload?.details?.field}`,
+  );
+
+  // The SKU-level link the publish gate reads.
+  const link = await request(`/api/categories/${createdCategory?.id}/attributes/`, {
+    method: "POST",
+    token,
+    body: {
+      attribute_definition_id: createdAttribute?.id,
+      is_required: true,
+      value_level: "sku",
+    },
+  });
+  expect(
+    link.status === 200 && link.json?.payload?.value_level === "sku",
+    "POST /api/categories/{id}/attributes/ → 200 (variant linked per SKU)",
+    `got ${link.status}`,
+  );
+  if (link.json?.payload?.id) {
+    cleanup.push([
+      "link",
+      `/api/categories/${createdCategory?.id}/attributes/${link.json.payload.id}`,
+    ]);
+  }
+
+  const specificationLink = await request(`/api/categories/${createdCategory?.id}/attributes/`, {
+    method: "POST",
+    token,
+    body: {
+      attribute_definition_id: createdSpecification?.id,
+      is_required: false,
+      value_level: "product_or_sku",
+    },
+  });
+  expect(
+    specificationLink.status === 200,
+    "  and a specification linked at product_or_sku → 200",
+    `got ${specificationLink.status}`,
+  );
+  if (specificationLink.json?.payload?.id) {
+    cleanup.push([
+      "link",
+      `/api/categories/${createdCategory?.id}/attributes/${specificationLink.json.payload.id}`,
+    ]);
+  }
+
+  const linkList = await request(`/api/categories/${createdCategory?.id}/attributes/?page=1&size=100`);
+  expect(
+    linkList.status === 200 &&
+      (linkList.json?.payload?.items ?? []).every(
+        (entry) => "item" in entry && "inherited" in entry && "source_category_id" in entry,
+      ),
+    "GET /api/categories/{id}/attributes/ → {item,inherited,source_category_id} entries",
+    `got ${linkList.status}`,
+  );
+
+  // Publication, gate by gate.
+  const galleryless = await request(`/api/products/${createdProduct?.id}/publish`, {
+    method: "POST",
+    token,
+  });
+  expect(
+    galleryless.status === 422 && galleryless.json?.payload?.details?.field === "gallery",
+    "POST /api/products/{id}/publish (no gallery) → 422 field=gallery",
+    `got ${galleryless.status} / field=${galleryless.json?.payload?.details?.field}`,
+  );
+
+  await request(`/api/products/${createdProduct?.id}`, {
+    method: "PUT",
+    token,
+    body: { gallery: [uploadedFile?.id] },
+  });
+
+  const skuless = await request(`/api/products/${createdProduct?.id}/publish`, {
+    method: "POST",
+    token,
+  });
+  expect(
+    skuless.status === 422 && skuless.json?.payload?.details?.field === "skus",
+    "  …then 422 field=skus (no active SKU)",
+    `got ${skuless.status} / field=${skuless.json?.payload?.details?.field}`,
+  );
+
+  const sku = await request(`/api/products/${createdProduct?.id}/skus/`, {
+    method: "POST",
+    token,
+    body: { code: `${catalogSuffix}-sku`, price_cents: 1999, stock_quantity: 5 },
+  });
+  const createdSku = sku.json?.payload;
+  expect(sku.status === 200, "POST /api/products/{id}/skus/ → 200", `got ${sku.status}`);
+  if (createdSku?.id) cleanup.push(["sku", `/api/products/${createdProduct?.id}/skus/${createdSku.id}`]);
+
+  const valueless = await request(`/api/products/${createdProduct?.id}/publish`, {
+    method: "POST",
+    token,
+  });
+  expect(
+    valueless.status === 422 && valueless.json?.payload?.details?.field === "attribute_values",
+    "  …then 422 field=attribute_values (required attribute unanswered)",
+    `got ${valueless.status} / field=${valueless.json?.payload?.details?.field}`,
+  );
+
+  // The `value` is free-form JSON on the wire but typed against the definition — a number sent as a
+  // string is refused (this is what `lib/types/catalog.ts` + `AttributeValueField` encode).
+  const wrongType = await request(`/api/products/${createdProduct?.id}/attribute-values/`, {
+    method: "POST",
+    token,
+    body: { attribute_definition_id: createdSpecification?.id, value: "250" },
+  });
+  expect(
+    wrongType.status === 422 && wrongType.json?.payload?.details?.field === "value",
+    "POST /api/products/{id}/attribute-values/ (number sent as text) → 422 field=value",
+    `got ${wrongType.status} / field=${wrongType.json?.payload?.details?.field}`,
+  );
+
+  // Product-scope value for the specification…
+  const productValue = await request(`/api/products/${createdProduct?.id}/attribute-values/`, {
+    method: "POST",
+    token,
+    body: { attribute_definition_id: createdSpecification?.id, value: 250 },
+  });
+  expect(
+    productValue.status === 200 && productValue.json?.payload?.value === 250,
+    "  …with the right JSON type → 200 value=250",
+    `got ${productValue.status} / value=${JSON.stringify(productValue.json?.payload?.value)}`,
+  );
+
+  // …and a SKU-scope value for the variant, which is the answer the gate is still missing.
+  const outOfChoices = await request(
+    `/api/products/${createdProduct?.id}/skus/${createdSku?.id}/attribute-values/`,
+    {
+      method: "POST",
+      token,
+      body: { attribute_definition_id: createdAttribute?.id, value: "green" },
+    },
+  );
+  expect(
+    outOfChoices.status === 422 && outOfChoices.json?.payload?.details?.field === "value",
+    "POST …/skus/{skuId}/attribute-values/ (choice outside the definition) → 422 field=value",
+    `got ${outOfChoices.status} / field=${outOfChoices.json?.payload?.details?.field}`,
+  );
+
+  const skuValue = await request(
+    `/api/products/${createdProduct?.id}/skus/${createdSku?.id}/attribute-values/`,
+    {
+      method: "POST",
+      token,
+      body: { attribute_definition_id: createdAttribute?.id, value: "red" },
+    },
+  );
+  expect(
+    skuValue.status === 200,
+    "  …an allowed choice → 200",
+    `got ${skuValue.status}`,
+  );
+
+  const published = await request(`/api/products/${createdProduct?.id}/publish`, {
+    method: "POST",
+    token,
+  });
+  expect(
+    published.status === 200 && published.json?.payload?.status === "published",
+    "  …publish → 200 status=published once all three gates pass",
+    `got ${published.status} / status=${published.json?.payload?.status}`,
+  );
+
+  const draftFilter = await request("/api/products/?page=1&size=5&status=draft");
+  expect(
+    draftFilter.status === 200 && draftFilter.json?.payload?.items !== undefined,
+    "GET /api/products/?status=draft → 200 (status filter accepted)",
+    `got ${draftFilter.status}`,
+  );
+
+  const badStatus = await request("/api/products/?status=live");
+  expect(
+    badStatus.status === 422 && Array.isArray(badStatus.json?.detail),
+    "GET /api/products/?status=live → FastAPI 422 (the enum is draft|published|archived)",
+    `got ${badStatus.status}`,
+  );
+
+  // Stock: +3 must be recorded, and a zero delta must be refused by FastAPI's own validator.
+  const adjusted = await request(
+    `/api/products/${createdProduct?.id}/skus/${createdSku?.id}/stock-adjustments`,
+    { method: "POST", token, body: { quantity_delta: 3, reason: "smoke restock" } },
+  );
+  expect(
+    adjusted.status === 200 && adjusted.json?.payload?.sku?.stock_quantity === 8,
+    "POST …/stock-adjustments (+3) → 200 stock_quantity=8",
+    `got ${adjusted.status} / stock=${adjusted.json?.payload?.sku?.stock_quantity}`,
+  );
+
+  const zeroDelta = await request(
+    `/api/products/${createdProduct?.id}/skus/${createdSku?.id}/stock-adjustments`,
+    { method: "POST", token, body: { quantity_delta: 0, reason: "smoke" } },
+  );
+  expect(
+    zeroDelta.status === 422 && Array.isArray(zeroDelta.json?.detail),
+    "  quantity_delta=0 → FastAPI 422 (field detail, not the envelope)",
+    `got ${zeroDelta.status}`,
+  );
+
+  const priceLess = await request(`/api/products/${createdProduct?.id}/skus/`, {
+    method: "POST",
+    token,
+    body: { code: `${catalogSuffix}-sku-cheap`, price_cents: 0 },
+  });
+  expect(
+    priceLess.status === 422 && priceLess.json?.payload?.details?.field === "price_cents",
+    "POST …/skus/ price_cents=0 → 422 field=price_cents",
+    `got ${priceLess.status} / field=${priceLess.json?.payload?.details?.field}`,
+  );
+
+  // Archiving hides the product completely: it answers 404 afterwards.
+  const archived = await request(`/api/products/${createdProduct?.id}`, { method: "DELETE", token });
+  expect(
+    archived.status === 200 && archived.json?.payload?.status === "archived",
+    "DELETE /api/products/{id} → 200 status=archived",
+    `got ${archived.status}`,
+  );
+
+  const afterArchive = await request(`/api/products/${createdProduct?.id}`);
+  expect(
+    afterArchive.status === 404,
+    "  GET /api/products/{id} → 404 once archived (the row is gone from the API)",
+    `got ${afterArchive.status}`,
+  );
+
+  // Cleanup, in dependency order. 404/409 means an earlier step already removed the row.
+  for (const [what, path] of cleanup) {
+    if (what === "product") continue; // archived above
+    const removed = await request(path, { method: "DELETE", token });
+    if (![200, 204, 404].includes(removed.status)) {
+      fail(`cleanup DELETE ${path}`, `got ${removed.status}`);
+    }
+  }
+  const categoryRemoved = createdCategory?.id
+    ? await request(`/api/categories/${createdCategory.id}`, { method: "DELETE", token })
+    : null;
+  if (categoryRemoved && ![200, 204, 404].includes(categoryRemoved.status)) {
+    fail("cleanup DELETE the smoke category", `got ${categoryRemoved.status}`);
   }
 
   // 6. Unauthenticated access must stay a 401 envelope (this is what triggers a silent refresh).
