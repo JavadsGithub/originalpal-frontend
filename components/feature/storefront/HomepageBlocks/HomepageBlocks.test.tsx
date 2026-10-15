@@ -92,6 +92,25 @@ describe("HomepageBlocksUI", () => {
     ).toHaveTextContent("not publicly readable");
   });
 
+  it("links an internal target in-app and an external one in a new tab", () => {
+    const { unmount } = render(<HomepageBlocksUI blocks={[blockData()]} />);
+    expect(screen.getByRole("link", { name: "View all →" })).toHaveAttribute("href", "/search");
+    unmount();
+
+    render(
+      <HomepageBlocksUI
+        blocks={[
+          blockData({
+            block: { ...homepageBlockFixture, target_url: "https://campaign.example.com/promo" },
+          }),
+        ]}
+      />,
+    );
+    const external = screen.getByRole("link", { name: "View all →" });
+    expect(external).toHaveAttribute("href", "https://campaign.example.com/promo");
+    expect(external).toHaveAttribute("rel", "noreferrer");
+  });
+
   it("explains an empty homepage rather than rendering nothing", () => {
     render(<HomepageBlocksUI blocks={[]} />);
 

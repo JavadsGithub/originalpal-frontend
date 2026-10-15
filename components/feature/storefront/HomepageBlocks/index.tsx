@@ -39,6 +39,25 @@ const defaultTranslations: HomepageBlocksTranslations = {
     "This banner points at a file that is not publicly readable (`uploads:download` is required), so it cannot be shown here.",
 };
 
+/** `target_url` is free-form: a storefront route stays in-app, anything else opens in a new tab. */
+function BlockTargetLink({ href, label }: { href: string; label: string }) {
+  const className = "text-xs font-semibold hover:underline";
+
+  if (isInternalHref(href)) {
+    return (
+      <Link href={href} className={className}>
+        {label} →
+      </Link>
+    );
+  }
+
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className={className}>
+      {label} →
+    </a>
+  );
+}
+
 function BlockShell({ block, children }: { block: HomepageBlock; children: React.ReactNode }) {
   const cta = blockCtaLabel(block);
 
@@ -64,10 +83,8 @@ function BlockShell({ block, children }: { block: HomepageBlock; children: React
           )}
         </div>
 
-        {cta && block.target_url && isInternalHref(block.target_url) && (
-          <Link href={block.target_url} className="text-xs font-semibold hover:underline">
-            {cta} →
-          </Link>
+        {cta && block.target_url && (
+          <BlockTargetLink href={block.target_url} label={cta} />
         )}
       </header>
 
@@ -122,13 +139,10 @@ export default function HomepageBlocksUI({
                   {t.bannerImageNotice}
                 </p>
               ) : null}
-              {block.target_url && isInternalHref(block.target_url) && (
-                <Link
-                  href={block.target_url}
-                  className="inline-block rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-muted"
-                >
-                  {blockCtaLabel(block)} →
-                </Link>
+              {block.target_url && (
+                <span className="inline-block rounded-md border border-border px-3 py-1.5">
+                  <BlockTargetLink href={block.target_url} label={blockCtaLabel(block) ?? "Open"} />
+                </span>
               )}
             </div>
           )}

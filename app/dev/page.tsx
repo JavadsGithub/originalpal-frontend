@@ -1,6 +1,26 @@
 import Link from "next/link";
 import BackendStatus from "@/components/feature/system/BackendStatus/BackendStatus";
 
+const STOREFRONT_LINKS = [
+  {
+    href: "/",
+    label: "Storefront home",
+    description: "Editor-managed blocks from GET /api/homepage/ — public, no session.",
+  },
+  {
+    href: "/search",
+    label: "Browse & search",
+    description:
+      "GET /api/catalog/products/ with the term, category and brand filters kept in the URL.",
+  },
+  {
+    href: "/categories",
+    label: "Categories",
+    description:
+      "The tree from GET /api/categories/; a category page lists only its own products (no roll-up).",
+  },
+];
+
 const CUSTOMER_LINKS = [
   {
     href: "/register",
@@ -52,8 +72,10 @@ const EXAMPLE_LINKS = [
 ];
 
 /**
- * Route layer (Level 2): composes dependency injectors only — no data hooks, no UI primitives.
- * The sign-in page is `/login`; the backend's seed account is `admin` / `Secret123`.
+ * Integration index: every slice's entry points in one list, plus a live backend check.
+ *
+ * The storefront is the app's public face and lives at `/`, so this page — the previous home page —
+ * moved to `/dev`. Nothing here is part of the product; it is the map.
  */
 export default function Home() {
   return (
@@ -83,7 +105,7 @@ export default function Home() {
           Sign in →
         </Link>
 
-        {[...CUSTOMER_LINKS, ...ADMIN_LINKS, ...EXAMPLE_LINKS].map((link) => (
+        {[...STOREFRONT_LINKS, ...CUSTOMER_LINKS, ...ADMIN_LINKS, ...EXAMPLE_LINKS].map((link) => (
           <Link
             key={link.href}
             href={link.href}
