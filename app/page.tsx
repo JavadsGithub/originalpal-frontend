@@ -1,21 +1,29 @@
 import Link from "next/link";
 import BackendStatus from "@/components/feature/system/BackendStatus/BackendStatus";
 
-const EXAMPLE_LINKS = [
+const ADMIN_LINKS = [
   {
-    href: "/examples/admin/users",
-    label: "Admin · Users",
-    description: "Protected by users:read — good first check after signing in.",
+    href: "/admin/users",
+    label: "Users",
+    description: "Create, activate and delete accounts, and assign roles. Requires users:read.",
   },
   {
+    href: "/admin/roles",
+    label: "Roles & permissions",
+    description: "Build roles from the backend's 49 permissions. Requires roles:read.",
+  },
+];
+
+const EXAMPLE_LINKS = [
+  {
     href: "/examples/admin/invoices",
-    label: "Admin · Invoices",
-    description: "Mock-data showcase of the component framework.",
+    label: "Examples · Invoices",
+    description: "Mock-data showcase of the component framework (no backend counterpart).",
   },
   {
     href: "/examples/me/invoices",
-    label: "My · Invoices",
-    description: "Same abstract UI, different dependency injector.",
+    label: "Examples · My invoices",
+    description: "Same abstract UI, a different dependency injector.",
   },
 ];
 
@@ -51,7 +59,7 @@ export default function Home() {
           Sign in →
         </Link>
 
-        {EXAMPLE_LINKS.map((link) => (
+        {[...ADMIN_LINKS, ...EXAMPLE_LINKS].map((link) => (
           <Link
             key={link.href}
             href={link.href}

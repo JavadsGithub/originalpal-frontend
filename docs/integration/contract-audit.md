@@ -255,3 +255,50 @@ slices; nothing in the auth/RBAC path depends on them.
    compatibility … Support for FastAPI versions lower than v0.128.0 will be dropped in v0.16.0"* while
    `fastapi==0.115.6` is pinned. Pin a compatible pair before pagination behaviour surprises the frontend.
 5. **`secure` cookie flag** must be `True` in production (`auth_controller.p
+---
+
+## 9. Addendum — the admin slice, verified against the live server
+
+The screens added after the first audit (`/admin/users`, `/admin/roles`) were checked the same way:
+against the running backend, never against fixtures.
+
+`pnpm smoke` now walks the whole account lifecycle headless (**30 checks, all passing**):
+
+| Check | Live result |
+| --- | --- |
+| `POST /api/users/` | `200` (not `201`), body `is_active: false` |
+| sign-in as the fresh account | `401 INACTIVE_USER` |
+| `PUT /api/users/{id}` `{is_active:true}` | `200`, `is_active: true` |
+| sign-in after activation | `200` + access token |
+| `GET /api/roles/` | 3 seeded roles, each with `permission_ids[]` |
+| `POST /api/users/{id}/roles/{roleId}` | `200`, returned user carries the role |
+| `DELETE /api/users/{id}/roles/{roleId}` | `200`, role gone from the returned user |
+| `DELETE /api/users/{id}` | `200` |
+
+Two consequences for the UI:
+
+* `POST /api/users/` answers **200**, not 201 — don't key off "created" status codes.
+* Activation is a *two-step backend behaviour* (`INACTIVE_USER` → `PUT is_active` → sign-in works), so it
+  is stated in `UserFormDialog`'s create-mode copy and asserted by the smoke test instead of assumed.
+
+### `GET /api/auth/permissions` carries no `policies`
+
+Live payload per permission: `{title, description, id, created_at, updated_at}` — 49 entries, no
+`policies` key (the DTO/`response_model` drops the policy path). The permission picker therefore builds
+its groups from `lib/permissions.ts`, which mirrors the backend registry and is drift-checked by
+`pnpm permissions:check`; the endpoint stays useful for a runtime title lookup only.
+
+### Test layers
+
+| Layer | Command | Needs a backend? | Runs in this sandbox? |
+| --- | --- | --- | --- |
+| Unit / integration (MSW, exact live shapes) | `pnpm test` | no | yes — 8 files / 42 tests |
+| Headless contract + lifecycle | `pnpm smoke` | yes | yes — 30 checks |
+| Browser end-to-end (`e2e/*.spec.ts`, 8 specs) | `pnpm test:e2e` | yes | **no** |
+
+The Playwright specs cover the redirect for anonymous visitors, the wrong-credentials message, sign-in,
+session restore after a reload (exercises the silent `POST /api/auth/refresh`), sign-out, and the
+create → activate → assign-role → delete lifecycle *through the UI*. They are type-checked, linted and
+`--list`-verified here, but `pnpm exec playwright install chromium` needs `cdn.playwright.dev`, which this
+sandbox blocks — run them on a machine with browser downloads enabled. `pnpm smoke` is the same
+endpoints without a browser, which is why it was extended instead of waiting for one.

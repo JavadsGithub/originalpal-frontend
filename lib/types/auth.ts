@@ -47,6 +47,37 @@ export interface TokenResponse {
   expires_at: string;
 }
 
+/** `UserCreate` request body for `POST /api/users/` (admin). Creates an inactive account. */
+export interface UserCreateRequest {
+  first_name: string;
+  last_name: string;
+  email: string;
+  username: string;
+  password: string;
+}
+
+/** `UserUpdate` body for `PUT /api/users/{id}` — omitted fields are preserved. */
+export interface UserUpdateRequest {
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  username?: string;
+  is_active?: boolean;
+}
+
+/** `RoleCreate` body for `POST /api/roles/`. */
+export interface RoleCreateRequest {
+  name: string;
+  permission_ids?: string[];
+}
+
+/** `RoleUpdate` body for `PUT /api/roles/{id}`. */
+export interface RoleUpdateRequest {
+  name?: string;
+  is_active?: boolean;
+  permission_ids?: string[];
+}
+
 /** `UserLogin` request body for `POST /api/auth/login`. */
 export interface LoginRequest {
   username: string;

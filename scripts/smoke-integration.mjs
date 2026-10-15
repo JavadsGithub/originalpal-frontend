@@ -176,6 +176,110 @@ async function main() {
     `got ${noSlash.status}`,
   );
 
+  // 5b. Admin slice lifecycle — exactly what the back office screens drive, headless.
+  const suffix = Date.now().toString(36);
+  const newUsername = `smoke-${suffix}`;
+  const newEmail = `${newUsername}@example.com`;
+
+  const created = await request("/api/users/", {
+    method: "POST",
+    token,
+    body: {
+      first_name: "Smoke",
+      last_name: "Test",
+      email: newEmail,
+      username: newUsername,
+      password: "Secret123",
+    },
+  });
+  const createdUser = created.json?.payload;
+  expect(
+    created.status === 201 || created.status === 200,
+    "POST /api/users/ → new account",
+    `got ${created.status}`,
+  );
+  expect(
+    createdUser?.is_active === false,
+    "  account is created INACTIVE — activation is a second, explicit step",
+    `is_active=${createdUser?.is_active}`,
+  );
+
+  if (createdUser?.id) {
+    const inactiveLogin = await request("/api/auth/login", {
+      method: "POST",
+      body: { username: newUsername, password: "Secret123" },
+    });
+    expect(
+      inactiveLogin.status === 401 && inactiveLogin.json?.payload?.error_code === "INACTIVE_USER",
+      "  signing in as the new user → 401 INACTIVE_USER (documented in EditUserDialog)",
+      `${inactiveLogin.status} ${inactiveLogin.json?.payload?.error_code}`,
+    );
+
+    const activated = await request(`/api/users/${createdUser.id}`, {
+      method: "PUT",
+      token,
+      body: { is_active: true },
+    });
+    expect(
+      activated.status === 200 && activated.json?.payload?.is_active === true,
+      "PUT /api/users/{id} {is_active:true} → account activated",
+      `got ${activated.status}`,
+    );
+
+    const activeLogin = await request("/api/auth/login", {
+      method: "POST",
+      body: { username: newUsername, password: "Secret123" },
+    });
+    expect(
+      activeLogin.status === 200 && Boolean(activeLogin.json?.payload?.token),
+      "  signing in after activation → 200 (activation semantics verified)",
+      `got ${activeLogin.status}`,
+    );
+
+    // Roles: catalogue shape + assign/unassign through the user-scoped endpoints.
+    const roles = await request("/api/roles/?page=1&size=100", { token });
+    const roleItems = roles.json?.payload?.items ?? [];
+    expect(
+      roles.status === 200 &&
+        roleItems.length > 0 &&
+        roleItems.every((role) => Array.isArray(role.permission_ids)),
+      "GET /api/roles/ → Role → permission_ids shape present",
+      `${roleItems.length} roles`,
+    );
+
+    const targetRole = roleItems.find((role) => role.name === "Admin") ?? roleItems[0];
+    if (targetRole) {
+      const assigned = await request(`/api/users/${createdUser.id}/roles/${targetRole.id}`, {
+        method: "POST",
+        token,
+      });
+      expect(
+        assigned.status === 200 &&
+          (assigned.json?.payload?.roles ?? []).some((role) => role.id === targetRole.id),
+        "POST /api/users/{id}/roles/{roleId} → updated user carries the role",
+        `got ${assigned.status}`,
+      );
+
+      const unassigned = await request(`/api/users/${createdUser.id}/roles/${targetRole.id}`, {
+        method: "DELETE",
+        token,
+      });
+      expect(
+        unassigned.status === 200 &&
+          !(unassigned.json?.payload?.roles ?? []).some((role) => role.id === targetRole.id),
+        "DELETE /api/users/{id}/roles/{roleId} → role removed",
+        `got ${unassigned.status}`,
+      );
+    }
+
+    const deleted = await request(`/api/users/${createdUser.id}`, { method: "DELETE", token });
+    expect(
+      deleted.status === 200 || deleted.status === 204,
+      "DELETE /api/users/{id} → cleanup",
+      `got ${deleted.status}`,
+    );
+  }
+
   // 6. Unauthenticated access must stay a 401 envelope (this is what triggers a silent refresh).
   const anonymous = await request("/api/auth/me");
   expect(

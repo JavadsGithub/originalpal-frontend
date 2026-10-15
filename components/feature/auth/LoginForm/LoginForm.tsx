@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@/components/layout/auth-provider";
+import { toApiError } from "@/lib/api-error";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import LoginFormUI from "./index";
@@ -16,8 +17,8 @@ export default function LoginForm({ onSuccessRedirect }: LoginFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const redirectUrl =
-    onSuccessRedirect || searchParams.get("redirect") || "/examples/admin/users";
+  // `?redirect=` is set by AuthGuard; default to the back office overview.
+  const redirectUrl = onSuccessRedirect || searchParams.get("redirect") || "/admin";
 
   const handleSubmit = async (credentials: { username: string; password: string }) => {
     setIsLoading(true);
@@ -26,13 +27,9 @@ export default function LoginForm({ onSuccessRedirect }: LoginFormProps) {
     try {
       await login(credentials);
       router.push(redirectUrl);
-    } catch (err: unknown) {
-      const error = err as { response?: { data?: { message?: string } }; message?: string };
-      setErrorMessage(
-        error.response?.data?.message ||
-          error.message ||
-          "Failed to authenticate. Please check your credentials.",
-      );
+    } catch (error: unknown) {
+      // `ApiError` already carries the backend's message for both error shapes (envelope and 422).
+      setErrorMessage(toApiError(error).message);
     } finally {
       setIsLoading(false);
     }

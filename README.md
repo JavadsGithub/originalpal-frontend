@@ -88,19 +88,47 @@ In short:
 | `pnpm build` / `pnpm start` | production build / serve |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm lint` | ESLint |
-| `pnpm check` | typecheck + lint + `permissions:check` |
+| `pnpm check` | typecheck + lint + `permissions:check` + `pnpm test` |
+| `pnpm test` / `pnpm test:watch` / `pnpm test:ui` | unit & integration tests (vitest + MSW, no backend needed) |
+| `pnpm test:e2e` / `pnpm test:e2e:ui` | browser end-to-end tests (Playwright, needs the backend + `pnpm exec playwright install chromium`) |
 | `pnpm permissions:sync` | regenerate `lib/permissions.ts` from `statics/permissions.json` |
 | `pnpm permissions:sync -- --from ../originalpal-server-python/statics/permissions.json` | refresh the snapshot from the backend, then regenerate |
 | `pnpm permissions:check` | fail if the generated registry is stale (CI gate) |
 | `pnpm api:generate` | orval client generation from `OPENAPI_JSON_URL` (output in git-ignored `lib/api`) |
 | `pnpm smoke` | end-to-end contract check through the proxy against the live backend |
 
+## Testing
+
+Three layers, from fastest to most convincing:
+
+| Layer | Command | What it proves |
+| --- | --- | --- |
+| Unit / integration | `pnpm test` | the client layer against MSW replicas of live responses: envelope unwrapping, 401→refresh→replay, 422 normalisation, permission gates, table behaviour |
+| Headless contract | `pnpm smoke` | the real stack — browser-facing contract → `/api/*` proxy → FastAPI. Also walks the full account lifecycle (create inactive → activate → assign role → delete) |
+| Browser end-to-end | `pnpm test:e2e` | the same flows *through the UI*, including session restore after a reload |
+
+`pnpm test:e2e` needs a browser: `pnpm exec playwright install chromium`, a running backend with seed
+data, and (optionally) `E2E_BASE_URL` / `E2E_USERNAME` / `E2E_PASSWORD`. In a sandbox without access to
+the Playwright browser CDN, use `pnpm smoke` — it covers the same endpoints without a browser.
+
+## Back office
+
+`/admin` is the real administration area (the `/examples/**` pages stay as framework showcases):
+
+| Screen | Endpoints | Gate |
+| --- | --- | --- |
+| `/admin/users` | `GET/POST /api/users/`, `PUT/DELETE /api/users/{id}`, `POST|DELETE /api/users/{id}/roles/{roleId}` | `users:read`, with per-action gates on `users:create|update|delete|assign_role|unassign_role` |
+| `/admin/roles` | `GET/POST /api/roles/`, `PUT/DELETE /api/roles/{id}`, `POST|DELETE /api/roles/{id}/permissions/{permissionId}` | `roles:read`, with per-action gates on `roles:create|update|delete|assign_permission|unassign_permission` |
+
+New accounts are created **inactive** (backend behaviour) — the UI says so and activation is one click
+(`PUT /api/users/{id}` `{is_active:true}`).
+
 ## Roadmap
 
-The backend exposes 114 operations; the frontend currently consumes the auth and user-management
-slice. Next slices, in the order the audit suggests:
+The backend exposes 114 operations; the frontend consumes auth, users and roles. Next slices, in the
+order the audit suggests:
 
-1. Admin back-office: users + roles + permission pickers (uses `permissionCatalog`).
+1. ~~Admin back-office: users + roles + permission pickers~~ — done (§9 of the audit).
 2. Catalog management: products, SKUs, categories, attributes, brands (+ uploads for images).
 3. Storefront: public catalog, homepage blocks, cart, checkout, orders, customer addresses.
 4. Customer account: register, profile update, password recovery.
