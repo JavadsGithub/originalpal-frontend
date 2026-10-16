@@ -65,6 +65,48 @@ export const storefrontKeys = {
   },
 };
 
+/**
+ * Cart keys.
+ *
+ * A cart is addressed by its id (the guest's capability), so every key is scoped by it — two browsers
+ * on the same machine cannot see each other's cart in the cache.
+ */
+export const cartKeys = {
+  all: ["cart"] as const,
+  detail: (cartId: string | null) => [...cartKeys.all, "detail", cartId] as const,
+  deliveries: (city: string) => [...cartKeys.all, "deliveries", city.trim().toLowerCase()] as const,
+};
+
+/**
+ * Order keys.
+ *
+ * `mine` is the signed-in customer's list; `guest` is the public read that needs the order's access
+ * token; `admin` is the back-office list, kept separate so a permission-gated cache entry never feeds
+ * a customer screen.
+ */
+export const orderKeys = {
+  all: ["orders"] as const,
+
+  mine: (params: { page: number; size: number }) => [...orderKeys.all, "mine", params] as const,
+  mineDetail: (orderId: string) => [...orderKeys.all, "mine", "detail", orderId] as const,
+
+  guest: (orderId: string) => [...orderKeys.all, "guest", orderId] as const,
+
+  payments: (orderId: string) => [...orderKeys.all, "payments", orderId] as const,
+
+  admin: {
+    all: () => [...orderKeys.all, "admin"] as const,
+    list: (params: {
+      page: number;
+      size: number;
+      status?: string;
+      search?: string;
+    }) => [...orderKeys.admin.all(), "list", params] as const,
+    detail: (orderId: string) => [...orderKeys.admin.all(), "detail", orderId] as const,
+    messages: (orderId: string) => [...orderKeys.admin.all(), "messages", orderId] as const,
+  },
+};
+
 export const systemKeys = {
   all: ["system"] as const,
   backendHealth: () => [...systemKeys.all, "backend-health"] as const,

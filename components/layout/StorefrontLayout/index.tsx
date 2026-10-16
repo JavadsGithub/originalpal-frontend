@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import type { HomepageNavigationItem } from "@/lib/types/storefront";
 
 export interface StorefrontLayoutTranslations {
+  cartText: string;
   brandName: string;
   brandTagline: string;
   searchPlaceholder: string;
@@ -22,11 +23,14 @@ export interface StorefrontLayoutTranslations {
 export interface StorefrontLayoutUIProps {
   /** From `GET /api/homepage/` — the backend's own five entries. */
   navigation: HomepageNavigationItem[];
+  /** Lines in the guest cart, straight off `GET /api/carts/{id}` — `0` when there is no cart. */
+  cartCount: number;
   children: ReactNode;
   translations?: Partial<StorefrontLayoutTranslations>;
 }
 
 const defaultTranslations: StorefrontLayoutTranslations = {
+  cartText: "Cart",
   brandName: "Original Pal",
   brandTagline: "Storefront",
   searchPlaceholder: "Search products",
@@ -45,6 +49,7 @@ const defaultTranslations: StorefrontLayoutTranslations = {
  */
 export default function StorefrontLayoutUI({
   navigation,
+  cartCount,
   children,
   translations = {},
 }: StorefrontLayoutUIProps) {
@@ -85,6 +90,10 @@ export default function StorefrontLayoutUI({
             </form>
 
             <div className="flex items-center gap-2">
+              <Link href="/cart" className="text-xs font-semibold text-foreground hover:underline" data-testid="cart-link">
+                {t.cartText}
+                {cartCount > 0 && <span data-testid="cart-count"> ({cartCount})</span>}
+              </Link>
               {isAuthenticated ? (
                 <Link
                   href="/account"

@@ -10,6 +10,7 @@ import {
   stockState,
 } from "@/lib/storefront-rules";
 import type { PublicProductDetail } from "@/lib/types/storefront";
+import AddToCartButton from "@/components/feature/cart/AddToCartButton/AddToCartButton";
 import Link from "next/link";
 
 export interface ProductDetailTranslations {
@@ -21,6 +22,7 @@ export interface ProductDetailTranslations {
   optionsColumn: string;
   priceColumn: string;
   availabilityColumn: string;
+  addToCartColumn: string;
   stockColumn: string;
   inStock: string;
   outOfStock: string;
@@ -46,6 +48,7 @@ const defaultTranslations: ProductDetailTranslations = {
   optionsColumn: "Options",
   priceColumn: "Price",
   availabilityColumn: "Availability",
+  addToCartColumn: "Buy",
   stockColumn: "Available",
   inStock: "In stock",
   outOfStock: "Sold out",
@@ -162,6 +165,7 @@ export default function ProductDetailUI({
                 <TableHead>{t.priceColumn}</TableHead>
                 <TableHead>{t.stockColumn}</TableHead>
                 <TableHead>{t.availabilityColumn}</TableHead>
+                <TableHead>{t.addToCartColumn}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -179,6 +183,13 @@ export default function ProductDetailUI({
                     <Badge variant={sku.is_available ? "success" : "outline"}>
                       {formatSkuAvailability(sku)}
                     </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <AddToCartButton
+                      skuId={sku.id}
+                      available={sku.is_available}
+                      availableStock={sku.stock_quantity}
+                    />
                   </TableCell>
                 </TableRow>
               ))}

@@ -19,6 +19,18 @@ const STOREFRONT_LINKS = [
     description:
       "The tree from GET /api/categories/; a category page lists only its own products (no roll-up).",
   },
+  {
+    href: "/cart",
+    label: "Cart & checkout",
+    description:
+      "A guest cart (POST /api/carts/, anonymous), the delivery table for a city, then POST /api/checkouts/.",
+  },
+  {
+    href: "/orders/lookup",
+    label: "Find a guest order",
+    description:
+      "GET /api/orders/{id}?guest_access_token=… and the two-step claim that attaches it to an account.",
+  },
 ];
 
 const CUSTOMER_LINKS = [
@@ -31,6 +43,11 @@ const CUSTOMER_LINKS = [
     href: "/account",
     label: "Your account",
     description: "Profile (PUT /api/auth/me) and the address book (/api/me/addresses/).",
+  },
+  {
+    href: "/account/orders",
+    label: "Your orders",
+    description: "GET /api/me/orders/ — session-scoped, and empty until a guest order is claimed.",
   },
   {
     href: "/forgot-password",
@@ -55,6 +72,12 @@ const ADMIN_LINKS = [
     label: "Catalog",
     description:
       "Products, SKUs, categories, attributes, brands and uploads. Reads are public, writes need a permission.",
+  },
+  {
+    href: "/admin/orders",
+    label: "Orders",
+    description:
+      "List and filter with orders:read, then drive the status machine: fulfil, cancel, record refunds and retry notifications.",
   },
 ];
 

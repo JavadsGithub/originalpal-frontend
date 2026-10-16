@@ -151,6 +151,12 @@ Authoritative mapping extracted from `originalpal-server-python` @ `3d82827` (`a
 | POST | `/api/orders/{order_id}/ship` | `Orders_Fulfill` |
 | POST | `/api/payment-attempts/{attempt_id}/verify` | Public |
 
+Notes on the "Public" rows above: they are not open-ended. `GET /api/orders/{order_id}` needs its
+`guest_access_token` in the query string (`422` without it, `404` for a wrong one), `guest-cancel` takes the
+token in the body, and both payment-attempt reads require `?guest_access_token=` (`422` without it) while the
+verify callback carries the order id and amount in the body. See §13 of the audit — including follow-up #19
+about the verify route being the one endpoint a real provider would have to sign.
+
 
 ## Uploads
 

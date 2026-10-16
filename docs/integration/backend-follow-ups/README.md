@@ -27,6 +27,10 @@ These are the fixes that remove workarounds and pre-empt bugs on the backend sid
 | 15 | Uploaded files are not publicly readable | **high** (storefront) | product and banner images |
 | 16 | Inline `option_values` bypass attribute validation | medium | one fact, two sources of truth |
 | 17 | SKU `code` is consumed forever and archived rows are unreachable | medium | rebuilding a product after archiving |
+| 18 | Checkout never clears the cart, and carts cannot be deleted | medium | a second purchase from the same browser |
+| 19 | `POST /api/payment-attempts/{id}/verify` is unauthenticated | medium (security review) | trusting an order's `paid` status |
+| 20 | Claiming a guest order requires the order's contact email to equal the account's | medium | customers who checked out with another email |
+| 21 | Nothing expires an abandoned payment window | **high** (inventory) | reserved stock coming back |
 > **Note on #13.** An earlier probe recorded the public homepage feed as ignoring `display_order`; that
 > was **wrong** — the probe's blocks all carried the default `0`, so insertion order looked arbitrary.
 > Re-probed with explicit orders (`9`, `1`, `5`, created out of order): `list_active()` orders by
@@ -886,3 +890,229 @@ seeder can go back to stable, readable codes.
 * **`PUT /api/auth/me` has no email change** (the DTO forbids unknown fields). Changing an email needs a
   verification flow, which the backend does not model yet — worth deciding before the storefront ships its
   account page.
+
+---
+
+## 18. Checkout neither clears the cart nor lets anyone delete it
+
+**Evidence** (live):
+
+```bash
+POST /api/carts/                                     → 200, cart C
+POST /api/carts/C/lines/ {sku, 2}                    → 200, total 5198
+POST /api/checkouts/ {cart:C, …, express}            → 200, order O (total 6198)
+GET  /api/carts/C                                    → 200, **the same two lines are still there**
+POST /api/carts/C/lines/ {sku, 1}                    → 200, the cart is now 7797
+POST /api/checkouts/ {cart:C}                        → 200, **order O again**, still 6198 — the line is ignored
+DELETE the last line, check out again                → 200, order O again (no error)
+DELETE /api/carts/C                                  → 405 Method Not Allowed
+```
+
+`CheckoutCartUseCase.execute()` looks up an `awaiting_payment` order for the cart **before** it reads the
+cart at all, and returns it unchanged when one exists. Nothing ever clears the lines, and no delete route
+exists for a cart. So a cart is not a basket that becomes an order: it is a permanent key that keeps
+pointing at the first order placed through it, and every later checkout of that cart is a no-op that returns
+that same order — silently, with a `200`.
+
+**Why it matters now.** The storefront had to work around this: after a successful checkout
+`components/feature/checkout/CheckoutForm/CheckoutForm.tsx` **drops the browser's cart id**
+(`lib/cart-storage.ts`) so the next "add to cart" starts a fresh cart. Without that, a shopper who buys
+twice from the same browser would watch their second purchase return the first order — the failure mode is
+invisible at the API level and only a client-side convention hides it. The workaround also has a cost: the
+abandoned cart rows cannot be removed, so they accumulate on every device.
+
+**Patch — clear the cart as part of a successful first checkout, and expose a delete route.**
+
+```diff
+     async def execute(self, request: CheckoutCartRequest) -> CheckoutCartResponse:
+         existing = await self._orders.get_awaiting_payment_by_cart_id(request.cart_id)
+         if existing is not None:
+             return CheckoutCartResponse(existing)
+         cart = await self._carts.get_by_id(request.cart_id)
+@@
+-            return CheckoutCartResponse(await self._orders.create(order))
++            created = await self._orders.create(order)
++            # The basket has become an order: drop its lines so the cart cannot be checked out
++            # again into the same reservation, and so a shopper starts a new one next time.
++            cart.lines.clear()
++            cart.updated_at = datetime.now(UTC)
++            await self._carts.update(cart)
++            return CheckoutCartResponse(created)
+```
+
+and a route the client can call when it abandons a basket:
+
+```python
+@cart_router.delete("/{cart_id}", response_model=StandardResponse[None])
+async def delete_cart(cart_id: str, usecase: DeleteCartUseCase = Depends(get_delete_cart_usecase)):
+    await usecase.execute(DeleteCartRequest(cart_id=cart_id))
+    return success(message="Cart deleted successfully")
+```
+
+Either half helps on its own; doing both removes the workaround and the row build-up. If clearing the cart
+is refused on purpose (a cart as a reusable basket), then the *return the existing order* branch needs to
+be documented as the contract — it is the surprising half today.
+
+---
+
+## 19. `POST /api/payment-attempts/{id}/verify` is unauthenticated
+
+**Evidence** (live):
+
+```bash
+POST /api/orders/{order_id}/payment-attempts/ {guest_access_token}   → 200, attempt A (amount = order total)
+POST /api/payment-attempts/{A}/verify {order_id, amount_cents, outcome:"succeeded", provider_reference:"X"}
+                                                                     → 200, **order.status = paid**
+# no session, no token, no signature — only the attempt id and the order's total
+```
+
+The verify route takes no `Depends(get_authorized_user())`, no guest token and no provider signature; the
+only thing standing between a caller and a `paid` order is knowing the attempt's UUID and the order's total
+(both of which are returned to whoever started the attempt). The mock provider makes this harmless today,
+but the shape of the endpoint is what a real PSP webhook would slot into — and that is the code path that
+must not be open.
+
+**Why it matters now.** The storefront *needs* this endpoint (the provider is `payments.example`, so the
+callback has to come from the browser — see `components/feature/order/PaymentPanel`), which means the
+frontend deliberately ships a button that marks an order paid without authenticating. That is fine for a
+demo and wrong for anything else; the audit's §13 says as much on screen.
+
+**Patch — require a provider signature, and keep a dev-only escape hatch.**
+
+```diff
++class PaymentVerificationCreate(BaseModel):
++    order_id: str
++    amount_cents: int
++    outcome: str
++    provider_reference: str | None = None
++    failure_reason: str | None = None
++    # When the provider is configured with a secret, the callback must carry a signature
++    # over the raw body. The mock provider leaves it unset and the check is skipped.
++    signature: str | None = None
++
++@payment_verification_router.post("/{attempt_id}/verify", response_model=StandardResponse[PaymentVerification])
++async def verify_payment_attempt(
++    attempt_id: str,
++    body: PaymentVerificationCreate,
++    request: Request,
++    usecase: VerifyPaymentAttemptUseCase = Depends(get_verify_payment_attempt_usecase),
++):
++    settings = get_settings()
++    if settings.payment_provider_secret:
++        raw = await request.body()
++        expected = hmac.new(settings.payment_provider_secret.encode(), raw, hashlib.sha256).hexdigest()
++        if not hmac.compare_digest(expected, body.signature or ""):
++            raise UnauthorizedException("Payment provider signature is invalid")
+     ...
+```
+
+Until then, the minimum is to make the exposure explicit: gate the route behind a setting
+(`PAYMENT_ALLOW_UNSIGNED_CALLBACKS`, default on for the mock provider) so a deployment cannot ship it by
+accident, and log every verification with the caller's address.
+
+---
+
+## 20. Claiming a guest order requires the order's contact email to equal the account's
+
+**Evidence** (live):
+
+```bash
+POST /api/me/orders/guest-associations/request {order_id, guest_access_token}
+   by the customer whose email == the order's contact_email   → 200 {accepted:true, verification_token, expires_at}
+   by a different account, with the **correct** token          → 404 (same body as an unknown order)
+```
+
+`RequestGuestOrderAssociationUseCase.execute()` requires all three: the order exists, `guest_access_token`
+matches, and `order.contact_email == user.email` — the token is not enough. `ConfirmGuestOrderAssociation`
+re-checks the email against the stored token row.
+
+**Why it matters now.** Checkout always creates a guest order with a **freely typed** `contact_email`, and
+`customer_id` is `null` even when the shopper is signed in (§13). A customer who buys with their work
+address while their account says otherwise can never claim the order through the UI, and — because the
+failure is a `404`, indistinguishable from a wrong token — they cannot be told why. `GuestOrderLookup`
+therefore states the email requirement *before* the button, and `/account/orders` says an order has to be
+claimed with its token first.
+
+**Patch — accept the claim when the *order* is provably the account's, not only the email.** The token is
+already a bearer secret for that order; the email check adds a second factor but breaks the common case.
+Two options:
+
+```diff
+-        if order is None or order.guest_access_token != guest_access_token or order.contact_email != email:
++        if order is None or order.guest_access_token != guest_access_token:
+             raise ResourceNotFoundException("Order", request.order_id)
++        if order.contact_email != email:
++            # Not a 404: an honest answer here costs nothing (the caller already holds the token) and
++            # lets the UI say "this order was placed for another email".
++            raise ValidationException(
++                "Order was placed with a different contact email", field="contact_email"
++            )
+```
+
+or, if the email check must stay, let the customer *correct* the order's contact email with the token
+(`PUT /api/orders/{id}/contact?guest_access_token=…`) — but then the second factor is gone anyway, which
+is the first option. Either way, the `404` should become a `422 field=contact_email` so the frontend can
+explain it.
+
+---
+
+## 21. Nothing expires an abandoned payment window, so reservations leak
+
+**Evidence** (live):
+
+```bash
+POST /api/checkouts/                       → 200, awaiting_payment, payment_expires_at = created_at + 30min
+# the shopper closes the tab
+GET  /api/orders/{id}?guest_access_token=… → 200, still awaiting_payment (1 second later, 1 hour later)
+GET  /api/carts/{id}                       → the lines are still there too
+sku: quantity 5, reserved 2, available 3   → **unchanged, forever** — nothing has released it
+```
+
+`is_payment_window_expired()` is consulted in exactly two places — `StartPaymentAttemptUseCase` and
+`VerifyPaymentAttemptUseCase` — so an order is only ever expired *by a call to the payment endpoints*. There
+is no scheduler, no expiry-on-read in the order or cart queries, and no `redis`/`apscheduler` job in the
+repository. Meanwhile `reserve_stock` has already decremented `available_quantity` at checkout. A busy shop
+therefore bleeds inventory for every abandoned basket, and the only recovery is either the shopper coming
+back to press "pay" (which expires the order and releases the stock) or an operator cancelling it by hand —
+and `cancel` on an `awaiting_payment` order does release the reservation, so the fix is only about *when*.
+
+**Why it matters now.** The storefront shows the window as a countdown
+(`components/feature/order/PaymentPanel`) and `lib/order-rules.ts` refuses to start a payment after it, so the
+UI behaves as if expiry were automatic — it is not, and the shopper's own "abandonment" therefore costs the
+shop stock that no screen ever shows as unavailable. `scripts/smoke-integration.mjs` cancels everything it
+creates for exactly this reason.
+
+**Patch (a) — expire on read, which is enough to stop the leak without new infrastructure.**
+
+```diff
+ class ListOrdersUseCase(_OrderMutationUseCase):
+     async def execute(self, request: ListOrdersRequest) -> ListOrdersResponse:
+         orders = await self._orders.list(filters=…)
++        # Reading the back office is the natural moment to notice abandoned baskets: releasing their
++        # reservations here means an operator sees the true availability without a cron job.
++        for order in orders:
++            if order.status is OrderStatus.AWAITING_PAYMENT and order.is_payment_window_expired():
++                await self._release_reserved_inventory(order)
++                order.expire_payment_window()
++                await self._orders.update(order)
+         return ListOrdersResponse(orders=orders, total=…)
+```
+
+**Patch (b) — a scheduled sweep, for a deployment that already runs a worker:**
+
+```python
+# app/infra/scheduler/expire_orders.py
+async def expire_abandoned_orders(orders: IOrderRepository, skus: ISkuRepository) -> int:
+    """Cancel every awaiting_payment order past its window and release its reservation."""
+    expired = 0
+    for order in await orders.list_expired_awaiting_payment():   # status + payment_expires_at < now
+        for item in order.items:
+            await skus.release_reserved_stock(item.sku_id, item.quantity)
+        order.expire_payment_window()
+        await orders.update(order)
+        expired += 1
+    return expired
+```
+
+Either way the rule is the same one the two payment use cases already implement — it just needs to run
+wherever nobody is looking.

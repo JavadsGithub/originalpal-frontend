@@ -15,6 +15,7 @@ export interface AccountNavItem {
 export const ACCOUNT_NAV_ITEMS: AccountNavItem[] = [
   { href: "/account", label: "Profile" },
   { href: "/account/addresses", label: "Addresses" },
+  { href: "/account/orders", label: "Orders" },
 ];
 
 export interface AccountLayoutUIProps {

@@ -29,6 +29,7 @@ export const ADMIN_NAV_ITEMS: AdminNavItem[] = [
   { href: "/admin/catalog/brands", label: "Brands" },
   { href: "/admin/catalog/attributes", label: "Attributes" },
   { href: "/admin/catalog/media", label: "Media", permission: Permissions.Uploads_Read },
+  { href: "/admin/orders", label: "Orders", permission: Permissions.Orders_Read },
 ];
 
 /**

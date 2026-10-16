@@ -589,3 +589,212 @@ kept in step:
 The back office therefore keeps writing values through `…/attribute-values/` (the strict path), and the
 public `option_values` in the storefront are shown as they are — with the caveat that they may not be
 what the catalog meant.
+
+---
+
+## 13. Addendum — cart, checkout, payments and orders, probed on the live server
+
+The commerce slice (`/cart` → `/checkout` → `/orders/{id}` → back-office fulfilment) was driven against
+the same live instance, in the order a browser performs it: anonymous cart → delivery lookup → checkout →
+payment attempt → provider callback → fulfilment → refund, plus the two owner-cancellation paths. Every
+number below is a response the frontend received, and `scripts/smoke-integration.mjs` §5f re-checks all of
+it (178 checks in total).
+
+### The four permissions, and the two anonymous surfaces
+
+| Endpoint | Auth |
+| --- | --- |
+| `POST /api/carts/`, `GET /api/carts/{id}`, `POST/PUT/DELETE …/lines/…` | anonymous |
+| `GET /api/delivery/options?city=` (**required**), `POST /api/checkouts/` | anonymous |
+| `GET /api/orders/{id}?guest_access_token=…`, `POST /api/orders/{id}/guest-cancel` | the token *is* the auth |
+| `POST /api/orders/{id}/payment-attempts/`, `GET …/payment-attempts/?guest_access_token=…`, `GET …/{attempt_id}?guest_access_token=…` | the token *is* the auth |
+| `POST /api/payment-attempts/{id}/verify` | **unauthenticated** (see follow-up #19) |
+| `GET/POST /api/me/orders/**` | any signed-in user (session-scoped, not permission-scoped) |
+| `GET /api/orders/`, `GET /api/orders/{id}/admin`, `POST …/{processing,ship,deliver,cancel,refund}`, `GET …/messages/` | `orders:read` / `orders:fulfill` / `orders:cancel` / `orders:refund` |
+| `POST /api/orders/{id}/messages/{message_id}/retry` | **`orders:fulfill`** — not `orders:read`, which is what listing the log needs |
+
+A signed-in customer with no permissions gets `403 FORBIDDEN` on `GET /api/orders/`; an anonymous caller
+gets `401` — the difference matters, because a browser must not treat "signed in but not allowed" as "log
+in again". Reading the notification log is gated even though its content is a no-op provider's output.
+
+### The payment-attempt read takes the guest token as a **query** parameter
+
+`GET /api/orders/{order_id}/payment-attempts/` declares `guest_access_token: Annotated[str,
+Query(min_length=1)]`, so the list and the by-id read answer `422` without it — unlike every other guest
+read, which carries the token in the query string too, and unlike the POST, which takes it in the body:
+
+```
+GET /api/orders/{id}/payment-attempts/                                      → 422 (missing query)
+GET /api/orders/{id}/payment-attempts/?guest_access_token=…                 → 200 {items,total}
+GET /api/orders/{id}/payment-attempts/{attempt_id}?guest_access_token=…     → 200
+POST /api/orders/{id}/payment-attempts/ {guest_access_token}                → 200
+```
+
+`data/feature/order/usePaymentAttempts.ts` sends the token both ways (`params` for the reads, `data` for
+the POST) because that is what the backend asks for.
+
+### One attempt per order is really *one pending attempt per order*
+
+`POST …/payment-attempts/` reuses the order's **pending** attempt (`get_pending_by_order_id`), so a second
+POST returns the same id — but once an attempt leaves `pending`, the next POST mints a new one. That is
+what makes retrying after a decline possible at all, because a non-pending attempt can no longer be
+verified:
+
+```
+POST …/payment-attempts/ → 200 (pending)
+POST …/payment-attempts/ → 200, same attempt id
+POST …/verify {outcome:"failed"}   → 200 {attempt:{status:"failed"},order:{status:"awaiting_payment"}}
+POST …/verify {outcome:"succeeded"}→ 422 field=attempt_id  ("Only pending payment attempts can be verified")
+POST …/payment-attempts/ → 200, **new** attempt id
+POST …/verify {outcome:"succeeded"}→ 200 {attempt:{status:"succeeded"},order:{status:"paid"}}
+POST …/verify {outcome:"succeeded"} on the succeeded attempt without a reference → 422
+                                      ("Provider reference is required")
+```
+
+So: `failed`/`cancelled` are terminal for the attempt and harmless for the order, and the UI's two-step
+("start", then report a callback outcome) maps exactly onto the API. `PaymentPanel` renders the callback
+buttons only for a `pending` attempt, and the "Start" button only while `lib/order-rules.ts` says the order
+is payable — which after a decline it still is.
+
+### `payment_expires_at`, and what happens after it
+
+The order is created `awaiting_payment` with a 30-minute window. Past it, the **next** call is what expires
+it: starting an attempt (or verifying one) releases the reservation and flips the order to `cancelled` with
+the reason `payment window expired`. A payment that succeeds after that does **not** un-cancel anything:
+
+```
+status=cancelled, cancellation_reason="payment window expired"
+POST …/verify {outcome:"succeeded"} → 200, attempt succeeded, order.payment_exception=true
+                                      payment_exception_reference=<provider reference>
+```
+
+The exception carries `payment_exception_reason = "late payment after reservation expiry"`.
+`lib/order-rules.ts` therefore treats a paid-but-expired order as an exception the shopper cannot fix
+(`canStartPayment` returns `false` for `payment_exception`), and the order screen says a human has to
+reconcile it. (`POST /api/checkouts/` on the same cart **will** create a second order once the first is no
+longer `awaiting_payment`, so a shopper who timed out can simply buy again.)
+
+### Checkout is keyed by the cart, clears nothing, and is not an order *builder*
+
+`CheckoutCartUseCase` looks up an `awaiting_payment` order for the cart **first** and returns it
+unchanged; only if there is none does it read the cart. Three behaviours fall out of that, all verified:
+
+```
+POST /api/checkouts/ {cart}                        → 200, order A (subtotal from the cart's lines)
+GET  /api/carts/{id}                               → the lines are **still there**
+POST /api/carts/{id}/lines/ {same sku, +1}         → 200 (the cart now totalled more)
+POST /api/checkouts/ {cart}                        → 200, **order A again**, unchanged totals
+DELETE the last line, checkout again               → 200, order A again (no error)
+POST /api/checkouts/ {unknown cart}                → 404 RESOURCE_NOT_FOUND
+POST /api/checkouts/ {real but empty cart}         → 422 field=cart_id
+POST /api/checkouts/ {Berlin, standard}            → 422 field=delivery_method
+```
+
+* **The cart is never emptied, and there is no `DELETE /api/carts/{id}`** (follow-up #18). Editing it after
+  a checkout changes nothing about the order already placed.
+* `CheckoutForm` therefore **drops the stored cart id on success** (`lib/cart-storage.ts`): keeping it
+  would silently tie every later purchase to the same order. The order stays reachable through its
+  remembered guest token.
+* Delivery is a lookup table, not a rate: `GET /api/delivery/options` needs `city` (`422` without it) and
+  only the seeded cities answer — Tehran (`standard` 500 / `express` 1000) and Shiraz (`standard` 700);
+  Berlin is `422 field=city`. The fee always comes from that response, never from the client.
+* `customer_id` is **`null` even for a signed-in shopper**: checkout takes no user from the request, so a
+  signed-in purchase is still a guest order until it is claimed (§ "Claiming").
+
+### Reserved → committed, in the SKU's own numbers
+
+```
+POST /api/checkouts/ (2 units)                       → sku: quantity 5, reserved 2, available 3
+POST /api/payment-attempts/{id}/verify {succeeded}   → sku: quantity 5, reserved 0, committed 2, available 3
+POST /api/orders/{id}/cancel (unpaid)                → sku: reserved 0 (released)
+POST /api/orders/{id}/cancel (paid)                  → committed stock released as well
+```
+
+`stock_quantity` is the **total** and never moves; `reserved_quantity`, `committed_quantity` and
+`available_quantity` are the three that do. The admin SKU screens show all four, which is what makes "a
+payment went through" visible as an inventory fact rather than a status word.
+
+### The status machine, as the API enforces it
+
+| Transition | Accepted from | Payload | Refused with |
+| --- | --- | --- | --- |
+| `…/processing` | `paid` | — | `422 field=status` |
+| `…/ship` | `paid`, `processing` | `{carrier, tracking_reference}` | `422 field=status` |
+| `…/deliver` | `shipped` | — | `422 field=status` |
+| `…/cancel` (back office) | anything not dispatched; already cancelled = **no-op `200`** | `{reason}` (required unless already cancelled) | `422 field=status` |
+| `…/refund` | `cancelled` **and** `refund_required` **and** no reference yet | `{refund_reference}` | `422 field=status` / `field=refund_reference` |
+| `…/guest-cancel`, `/api/me/orders/{id}/cancel` | **`awaiting_payment` only** | `{reason}` | `422 field=status` |
+
+* Cancelling a `paid`/`processing` order sets `refund_required = true`; cancelling an unpaid one leaves it
+  `false`. The refund reference is recorded once: the same reference is a no-op `200`, a different one is
+  `422 field=refund_reference`. Nothing moves money — `POST …/refund` is bookkeeping.
+* **Owner cancellation is narrower than the back office's**: "Only unpaid orders can be cancelled by their
+  owner" (`422 field=status`) covers both the customer endpoint and `guest-cancel`, and a second
+  `guest-cancel` on an already-cancelled order is `422`, not a no-op. `lib/order-rules.ts` mirrors this with
+  a second guard, `canOwnerCancel`, so `/account/orders/{id}` and the guest order page never offer a button
+  the API would refuse. (The back office keeps `canCancel`, which also covers `paid`/`processing` and the
+  paid-cancel refund warning.)
+* A missing `reason`/`refund_reference` is answered by FastAPI (`{detail:[…]}`), because those fields are
+  required by the DTO; the UI disables the button until the field has content.
+* Terminal states are honest: a delivered order offers no action at all, and the detail screen says so
+  instead of showing disabled buttons.
+
+### Claiming a guest order needs the token *and* the email on the account
+
+```
+POST /api/me/orders/guest-associations/request {order_id, guest_access_token}  → 200
+   {accepted:true, verification_token:<43 chars>, expires_at:<+1h>}
+   with another account's token/session                                   → 404 (no hint which half failed)
+POST /api/me/orders/guest-associations/confirm {verification_token}        → 200, order.customer_id set
+GET  /api/me/orders/                                                       → 200 {items,total,page,size,pages}
+```
+
+The request use case compares `order.contact_email` with **the signed-in user's email**, and answers
+`ResourceNotFoundException` (the same `404` as a wrong token) when they differ. Since checkout always
+creates a guest order, a customer who checked out with a different email cannot claim it through the UI —
+`GuestOrderLookup` says so before the button, and this is worth a backend follow-up (#20).
+
+Cross-account access on the customer paths is `404`, never `403` (`GET /api/me/orders/{id}`,
+`POST …/cancel`, and the association request all behave that way), so the frontend cannot use the status
+code to tell "not yours" from "does not exist" — which is the point.
+
+### Notifications are dispatched by the backend, and read from a permission-gated log
+
+`order_confirmation` is dispatched when the payment succeeds and `dispatch_notice` when the order ships,
+with `status=sent` under the current no-op provider. The log (`GET /api/orders/{id}/messages/`, a
+`Page`) carries `kind` (not `template`), `channel`, `recipient`, `subject`, `body`, `attempt_count`,
+`error_message`, `sent_at`. Retrying a failed message needs `orders:fulfill`; `OrderMessagesPanel` is handed
+that permission separately from the `orders:read` that fetched the log.
+
+### Images, again: the receipt is the same 401
+
+Product photos still answer `401` anonymously (follow-up #15), so the order screens show a product's title,
+SKU code and option values rather than a thumbnail — the same compromise the storefront makes, and it costs
+nothing here because an order line is text anyway.
+
+### What the smoke suite and the browser suite cover
+
+`node scripts/smoke-integration.mjs` §5f runs the whole life cycle through `/api/*` (66 of the 178 checks):
+cart merge and quantity bounds, the delivery table, checkout totals and reservation, both payment outcomes,
+the retry, the claim, both cancellation rules, fulfilment, refunds and the RBAC boundaries — seeding and
+cleaning up its own rows, cancelling (never deleting) the orders it creates. `e2e/order-lifecycle.spec.ts`
+then drives the same path through the screens: add-to-cart → `/cart` → `/checkout` → order page → payment
+panel (fail, then succeed) → back-office fulfilment to `delivered`, plus a guest cancel and a claim through
+`/orders/lookup` and `/account/orders`.
+
+### Two follow-ups the life cycle made unavoidable
+
+* **The reservation is only released by a call.** `is_payment_window_expired()` is consulted in the two
+  payment use cases and nowhere else, so an abandoned checkout holds its stock until either the shopper
+  comes back to press "pay" or an operator cancels the order by hand. The countdown the UI shows is real;
+  the expiry behind it is not automatic (follow-up #21).
+* **Owner cancellation is a one-way door once paid.** The shopper cannot cancel a paid order at all, and
+  the back office's cancel is what flags the refund — which is the right split, but it means the storefront
+  has to say "ask the shop" instead of quietly hiding a button (follow-up #20 covers the neighbouring
+  claiming constraint).
+
+### One dev-environment note
+
+There is **no `DELETE /api/orders/{id}`** anywhere, by design. The smoke suite leaves cancelled (or
+delivered) orders behind on every run, so a long-lived dev database accumulates them; the suite cancels
+everything it creates so stock is released, and that is the extent of the cleanup the API allows.

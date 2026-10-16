@@ -1460,6 +1460,832 @@ async function main() {
     }
   }
 
+  // 5f. Commerce — cart → checkout → payment → fulfilment — the lifecycle the new screens drive.
+  //
+  // Every cart/checkout/payment call here is **anonymous** (the storefront's guest path); only the
+  // back-office transitions carry a token. The section deliberately mirrors the sequence a browser
+  // performs, in order, because the interesting failures are the ones that only appear between steps:
+  // stock moving reserved → committed, the order appearing in `/api/me/orders/` only after it is
+  // associated with an account, and every transition guard answering `422 field=status`.
+  const commerceSuffix = `smoke-${suffix}-commerce`;
+  const commerceCleanup = [];
+  const commerceCategoryCleanup = [];
+  const commerceUserIds = [];
+  const ordersToCancel = [];
+
+  // Two accounts of its own: the ones from 5d are removed at the end of that section (and a deleted
+  // user's token stops being usable), and this section needs two live customers to prove that one
+  // cannot read or cancel the other's order.
+  const commerceCustomer = `${commerceSuffix}-buyer`;
+  const commerceOther = `${commerceSuffix}-other`;
+  for (const username of [commerceCustomer, commerceOther]) {
+    const created = await request("/api/auth/register", {
+      method: "POST",
+      body: {
+        first_name: "Smoke",
+        last_name: "Buyer",
+        email: `${username}@example.com`,
+        username,
+        password: "Secret123",
+      },
+    });
+    if (created.json?.payload?.id) commerceUserIds.push(created.json.payload.id);
+  }
+  const commerceCustomerLogin = await request("/api/auth/login", {
+    method: "POST",
+    body: { username: commerceCustomer, password: "Secret123" },
+  });
+  const commerceCustomerToken = commerceCustomerLogin.json?.payload?.token;
+  const commerceOtherLogin = await request("/api/auth/login", {
+    method: "POST",
+    body: { username: commerceOther, password: "Secret123" },
+  });
+  const commerceOtherToken = commerceOtherLogin.json?.payload?.token;
+  expect(
+    Boolean(commerceCustomerToken) && Boolean(commerceOtherToken),
+    "setup: two customers with sessions (cart and orders are anonymous / session-scoped, not permission-scoped)",
+    `buyer=${commerceCustomerLogin.status} other=${commerceOtherLogin.status}`,
+  );
+
+  const commerceCategory = await request("/api/categories/", {
+    method: "POST",
+    token,
+    body: { name: `Smoke commerce ${suffix}`, slug: `${commerceSuffix}-category`, parent_id: null },
+  });
+  const commerceCategoryId = commerceCategory.json?.payload?.id;
+  if (commerceCategoryId) {
+    commerceCategoryCleanup.push(["category", `/api/categories/${commerceCategoryId}`]);
+  }
+
+  const commerceProduct = await request("/api/products/", {
+    method: "POST",
+    token,
+    body: {
+      title: `Smoke commerce ${suffix}`,
+      slug: `${commerceSuffix}-product`,
+      category_id: commerceCategoryId,
+      brand_id: null,
+    },
+  });
+  const commerceProductId = commerceProduct.json?.payload?.id;
+  if (commerceProductId) {
+    commerceCleanup.push(["product", `/api/products/${commerceProductId}`]);
+  }
+  const commerceSku = await request(`/api/products/${commerceProductId}/skus/`, {
+    method: "POST",
+    token,
+    body: { code: `${commerceSuffix}-sku`, price_cents: 2599, stock_quantity: 5 },
+  });
+  const commerceSkuId = commerceSku.json?.payload?.id;
+  if (commerceSkuId) {
+    commerceCleanup.push(["sku", `/api/products/${commerceProductId}/skus/${commerceSkuId}`]);
+  }
+  // Publishing has three gates (follow-up #13's neighbours): an active SKU, a gallery, and valid
+  // attribute values. The image is the file uploaded in 5c — the storefront cannot *render* it
+  // (anonymous downloads are 401, follow-up #15) but the product is still sellable.
+  const commerceGallery = await request(`/api/products/${commerceProductId}`, {
+    method: "PUT",
+    token,
+    body: { gallery: [uploadedFile?.id] },
+  });
+  expect(
+    commerceGallery.status === 200,
+    "setup: the product gets a primary image (the publish gate reads the gallery)",
+    `got ${commerceGallery.status}`,
+  );
+
+  const commercePublished = await request(`/api/products/${commerceProductId}/publish`, {
+    method: "POST",
+    token,
+    body: {},
+  });
+  expect(
+    commercePublished.status === 200 &&
+      commercePublished.json?.payload?.status === "published" &&
+      Boolean(commerceSkuId),
+    "setup: a published product with one stocked SKU (2599, 5 in stock)",
+    `got ${commercePublished.status}`,
+  );
+
+  // The cart starts empty and is created anonymously — no session, no cookie, nothing to leak.
+  const cart = await request("/api/carts/", { method: "POST", body: {} });
+  const cartId = cart.json?.payload?.id;
+  expect(
+    cart.status === 200 && Boolean(cartId) && (cart.json?.payload?.lines ?? []).length === 0,
+    "POST /api/carts/ (anonymous) → 200 with an empty cart",
+    `got ${cart.status}`,
+  );
+
+  const added = await request(`/api/carts/${cartId}/lines/`, {
+    method: "POST",
+    body: { sku_id: commerceSkuId, quantity: 2 },
+  });
+  expect(
+    added.status === 200 &&
+      added.json?.payload?.lines?.length === 1 &&
+      added.json?.payload?.total_price_cents === 5198,
+    "POST /api/carts/{id}/lines/ → 200, line price computed by the API (2 × 2599)",
+    `got ${added.status} / total=${added.json?.payload?.total_price_cents}`,
+  );
+  const lineId = added.json?.payload?.lines?.[0]?.id;
+
+  // The same SKU merges into the existing line instead of creating a second one.
+  const merged = await request(`/api/carts/${cartId}/lines/`, {
+    method: "POST",
+    body: { sku_id: commerceSkuId, quantity: 1 },
+  });
+  expect(
+    merged.status === 200 &&
+      merged.json?.payload?.lines?.length === 1 &&
+      merged.json?.payload?.lines?.[0]?.quantity === 3,
+    "  adding the same SKU merges into one line (quantity 3)",
+    `lines=${merged.json?.payload?.lines?.length} qty=${merged.json?.payload?.lines?.[0]?.quantity}`,
+  );
+
+  const tooMany = await request(`/api/carts/${cartId}/lines/`, {
+    method: "POST",
+    body: { sku_id: commerceSkuId, quantity: 99 },
+  });
+  const zeroQuantity = await request(`/api/carts/${cartId}/lines/`, {
+    method: "POST",
+    body: { sku_id: commerceSkuId, quantity: 0 },
+  });
+  expect(
+    tooMany.status === 422 &&
+      tooMany.json?.payload?.details?.field === "quantity" &&
+      zeroQuantity.status === 422,
+    "  quantity 99 / quantity 0 → 422 field=quantity (the line total is checked against stock)",
+    `${tooMany.status} / ${zeroQuantity.status}`,
+  );
+
+  const unknownSku = await request(`/api/carts/${cartId}/lines/`, {
+    method: "POST",
+    body: { sku_id: "00000000-0000-4000-8000-000000000000", quantity: 1 },
+  });
+  expect(
+    unknownSku.status === 404 && unknownSku.json?.payload?.error_code === "RESOURCE_NOT_FOUND",
+    "  an unknown SKU → 404 RESOURCE_NOT_FOUND",
+    `got ${unknownSku.status}`,
+  );
+
+  const updatedLine = await request(`/api/carts/${cartId}/lines/${lineId}`, {
+    method: "PUT",
+    body: { quantity: 2 },
+  });
+  expect(
+    updatedLine.status === 200 && updatedLine.json?.payload?.lines?.[0]?.quantity === 2,
+    "PUT /api/carts/{id}/lines/{line_id} → 200, quantity lowered",
+    `got ${updatedLine.status}`,
+  );
+
+  // Delivery is a lookup, not a table: only the cities the backend has prices for answer.
+  const missingCity = await request("/api/delivery/options");
+  const tehran = await request("/api/delivery/options?city=Tehran");
+  const tehranOptions = tehran.json?.payload ?? [];
+  const berlin = await request("/api/delivery/options?city=Berlin");
+  expect(
+    missingCity.status === 422 && tehran.status === 200 && tehranOptions.length === 2,
+    "GET /api/delivery/options?city=Tehran (anonymous) → 200 with two methods",
+    `no-city=${missingCity.status} / Tehran=${tehranOptions.length}`,
+  );
+  expect(
+    tehranOptions.map((option) => `${option.method}:${option.fee_cents}`).join(",") ===
+      "standard:500,express:1000",
+    "  standard 500 / express 1000 — the fees the checkout adds to the subtotal",
+    tehranOptions.map((option) => `${option.method}:${option.fee_cents}`).join(","),
+  );
+  expect(
+    berlin.status === 422 && berlin.json?.payload?.details?.field === "city",
+    "  an undeliverable city (Berlin) → 422 field=city",
+    `got ${berlin.status} / field=${berlin.json?.payload?.details?.field}`,
+  );
+
+  const checkoutScaffold = {
+    contact_name: "Smoke Guest",
+    contact_email: `${commerceCustomer}@example.com`,
+    contact_phone: null,
+    city: "Tehran",
+    address_line1: "Valiasr 1",
+    postal_code: "1234567890",
+    delivery_method: "standard",
+  };
+  const unknownCartCheckout = await request("/api/checkouts/", {
+    method: "POST",
+    body: { ...checkoutScaffold, cart_id: "00000000-0000-4000-8000-000000000000" },
+  });
+  expect(
+    unknownCartCheckout.status === 404 &&
+      unknownCartCheckout.json?.payload?.error_code === "RESOURCE_NOT_FOUND",
+    "POST /api/checkouts/ (unknown cart) → 404 RESOURCE_NOT_FOUND",
+    `got ${unknownCartCheckout.status}`,
+  );
+
+  const emptyCart = await request("/api/carts/", { method: "POST", body: {} });
+  const emptyCartCheckout = await request("/api/checkouts/", {
+    method: "POST",
+    body: { ...checkoutScaffold, cart_id: emptyCart.json?.payload?.id },
+  });
+  expect(
+    emptyCartCheckout.status === 422 && emptyCartCheckout.json?.payload?.details?.field === "cart_id",
+    "  a real but empty cart → 422 field=cart_id",
+    `got ${emptyCartCheckout.status} / field=${emptyCartCheckout.json?.payload?.details?.field}`,
+  );
+
+  const checkoutBody = { ...checkoutScaffold, cart_id: cartId, delivery_method: "express" };
+  const checkout = await request("/api/checkouts/", { method: "POST", body: checkoutBody });
+  const order = checkout.json?.payload;
+  expect(
+    checkout.status === 200 &&
+      order?.status === "awaiting_payment" &&
+      order?.subtotal_cents === 5198 &&
+      order?.delivery_fee_cents === 1000 &&
+      order?.total_cents === 6198,
+    "POST /api/checkouts/ (anonymous) → 200 awaiting_payment, subtotal + fee = total",
+    `got ${checkout.status} / total=${order?.total_cents}`,
+  );
+  expect(
+    typeof order?.guest_access_token === "string" && order.guest_access_token.length === 43,
+    "  a 43-character guest_access_token is issued (the link that replaces a session)",
+    `len=${order?.guest_access_token?.length}`,
+  );
+  expect(
+    typeof order?.payment_expires_at === "string" && order?.customer_id === null,
+    "  payment_expires_at is set and customer_id stays null even though an admin is signed in",
+    `customer_id=${order?.customer_id}`,
+  );
+  const orderId = order?.id;
+  const guestToken = order.guest_access_token;
+  if (orderId) ordersToCancel.push(orderId);
+
+  const anonymousRead = await request(`/api/orders/${orderId}`);
+  const wrongToken = await request(`/api/orders/${orderId}?guest_access_token=wrong`);
+  const tokenRead = await request(
+    `/api/orders/${orderId}?guest_access_token=${encodeURIComponent(guestToken)}`,
+  );
+  expect(
+    anonymousRead.status === 422 && wrongToken.status === 404 && tokenRead.status === 200,
+    "GET /api/orders/{id} — no token → 422, wrong token → 404, the token → 200",
+    `${anonymousRead.status} / ${wrongToken.status} / ${tokenRead.status}`,
+  );
+
+  // Reserved, not committed: the SKU's own counters are the proof.
+  const reservedSku = await request(`/api/products/${commerceProductId}/skus/${commerceSkuId}`, { token });
+  expect(
+    reservedSku.json?.payload?.stock_quantity === 5 &&
+      reservedSku.json?.payload?.reserved_quantity === 2 &&
+      reservedSku.json?.payload?.available_quantity === 3,
+    "  checkout reserved the stock: quantity 5 stays the total, reserved 2, available 3",
+    `qty=${reservedSku.json?.payload?.stock_quantity} reserved=${reservedSku.json?.payload?.reserved_quantity} available=${reservedSku.json?.payload?.available_quantity}`,
+  );
+
+  // The cart is **not** touched by the checkout, and the order is keyed by it: as long as an
+  // awaiting_payment order exists for this cart, every later checkout returns that same order,
+  // whatever the shopper has added since. The client therefore drops its stored cart id on success
+  // (checkout/CheckoutForm.tsx) — there is no DELETE on carts to clean up with (follow-up #18).
+  const cartAfterCheckout = await request(`/api/carts/${cartId}`);
+  const cartWasEdited = await request(`/api/carts/${cartId}/lines/`, {
+    method: "POST",
+    body: { sku_id: commerceSkuId, quantity: 1 },
+  });
+  const recheckout = await request("/api/checkouts/", { method: "POST", body: checkoutBody });
+  expect(
+    cartAfterCheckout.json?.payload?.lines?.length === 1,
+    "  the checkout leaves the cart alone (the lines are still there)",
+    `lines=${cartAfterCheckout.json?.payload?.lines?.length}`,
+  );
+  expect(
+    cartWasEdited.status === 200 &&
+      recheckout.json?.payload?.id === orderId &&
+      recheckout.json?.payload?.total_cents === order?.total_cents,
+    "  re-checkout of the same cart returns the same, unchanged order — the added line is ignored",
+    `same=${recheckout.json?.payload?.id === orderId} total=${recheckout.json?.payload?.total_cents}`,
+  );
+
+  // One attempt per order: the second call answers with the same attempt, not a new row.
+  const attempt = await request(`/api/orders/${orderId}/payment-attempts/`, {
+    method: "POST",
+    body: { guest_access_token: guestToken },
+  });
+  const attemptId = attempt.json?.payload?.id;
+  const secondAttempt = await request(`/api/orders/${orderId}/payment-attempts/`, {
+    method: "POST",
+    body: { guest_access_token: guestToken },
+  });
+  expect(
+    attempt.status === 200 &&
+      attempt.json?.payload?.status === "pending" &&
+      attempt.json?.payload?.amount_cents === 6198 &&
+      attempt.json?.payload?.provider === "mock",
+    "POST /api/orders/{id}/payment-attempts/ → 200 pending, for the order's full total",
+    `got ${attempt.status} / amount=${attempt.json?.payload?.amount_cents}`,
+  );
+  expect(
+    secondAttempt.json?.payload?.id === attemptId,
+    "  a second POST returns the same attempt (one attempt per order)",
+    `${secondAttempt.json?.payload?.id === attemptId ? "same" : "different"} id`,
+  );
+
+  const attemptsWithoutToken = await request(`/api/orders/${orderId}/payment-attempts/`);
+  const attemptsList = await request(
+    `/api/orders/${orderId}/payment-attempts/?guest_access_token=${encodeURIComponent(guestToken)}`,
+  );
+  const attemptById = await request(
+    `/api/orders/${orderId}/payment-attempts/${attemptId}?guest_access_token=${encodeURIComponent(guestToken)}`,
+  );
+  expect(
+    attemptsWithoutToken.status === 422 && attemptsList.status === 200 && attemptsList.json?.payload?.total === 1,
+    "GET /api/orders/{id}/payment-attempts/ → 422 without the token, 200 {items,total} with it",
+    `${attemptsWithoutToken.status} / ${attemptsList.status} / total=${attemptsList.json?.payload?.total}`,
+  );
+  expect(
+    attemptById.status === 200 && attemptById.json?.payload?.id === attemptId,
+    "  the same token reads a single attempt by id",
+    `got ${attemptById.status}`,
+  );
+
+  const wrongAmount = await request(`/api/payment-attempts/${attemptId}/verify`, {
+    method: "POST",
+    body: { order_id: orderId, amount_cents: 1, outcome: "succeeded" },
+  });
+  expect(
+    wrongAmount.status === 422 && wrongAmount.json?.payload?.details?.field === "amount_cents",
+    "POST /api/payment-attempts/{id}/verify (wrong amount) → 422 field=amount_cents",
+    `got ${wrongAmount.status} / field=${wrongAmount.json?.payload?.details?.field}`,
+  );
+
+  const failedVerification = await request(`/api/payment-attempts/${attemptId}/verify`, {
+    method: "POST",
+    body: {
+      order_id: orderId,
+      amount_cents: order?.total_cents,
+      outcome: "failed",
+      failure_reason: "smoke test decline",
+    },
+  });
+  expect(
+    failedVerification.status === 200 &&
+      failedVerification.json?.payload?.attempt?.status === "failed" &&
+      failedVerification.json?.payload?.attempt?.failure_reason === "smoke test decline" &&
+      failedVerification.json?.payload?.order?.status === "awaiting_payment",
+    "  outcome=failed → 200 {attempt,order}, the order stays awaiting_payment (a decline is not a dead end)",
+    `got ${failedVerification.status} / attempt=${failedVerification.json?.payload?.attempt?.status} order=${failedVerification.json?.payload?.order?.status}`,
+  );
+
+  const stillAwaiting = await request(
+    `/api/orders/${orderId}?guest_access_token=${encodeURIComponent(guestToken)}`,
+  );
+  expect(
+    stillAwaiting.json?.payload?.status === "awaiting_payment",
+    "  the order is still payable after a failed attempt",
+    `status=${stillAwaiting.json?.payload?.status}`,
+  );
+
+  const reverifiedFailed = await request(`/api/payment-attempts/${attemptId}/verify`, {
+    method: "POST",
+    body: { order_id: orderId, amount_cents: order?.total_cents, outcome: "succeeded" },
+  });
+  expect(
+    reverifiedFailed.status === 422 && reverifiedFailed.json?.payload?.details?.field === "attempt_id",
+    "  a failed attempt cannot be re-verified → 422 field=attempt_id (retry means a new attempt)",
+    `got ${reverifiedFailed.status} / field=${reverifiedFailed.json?.payload?.details?.field}`,
+  );
+
+  // A second attempt is minted only because the first one is no longer pending — the POST is
+  // idempotent *per pending attempt*, not per order.
+  const retry = await request(`/api/orders/${orderId}/payment-attempts/`, {
+    method: "POST",
+    body: { guest_access_token: guestToken },
+  });
+  const retryAttemptId = retry.json?.payload?.id;
+  expect(
+    retry.status === 200 && retryAttemptId !== attemptId,
+    "  starting a payment after a decline → a new attempt (the failed one cannot be reused)",
+    `${retryAttemptId === attemptId ? "same" : "new"} attempt`,
+  );
+
+  const succeeded = await request(`/api/payment-attempts/${retryAttemptId}/verify`, {
+    method: "POST",
+    body: {
+      order_id: orderId,
+      amount_cents: order?.total_cents,
+      outcome: "succeeded",
+      provider_reference: `SMOKE-${suffix}`,
+    },
+  });
+  expect(
+    succeeded.status === 200 &&
+      succeeded.json?.payload?.attempt?.status === "succeeded" &&
+      succeeded.json?.payload?.attempt?.provider_reference === `SMOKE-${suffix}` &&
+      succeeded.json?.payload?.order?.status === "paid",
+    "  outcome=succeeded → 200 {attempt,order}, the order is paid",
+    `got ${succeeded.status} / ref=${succeeded.json?.payload?.attempt?.provider_reference} order=${succeeded.json?.payload?.order?.status}`,
+  );
+
+  const paidOrder = await request(`/api/orders/${orderId}/admin`, { token });
+  expect(
+    paidOrder.json?.payload?.status === "paid",
+    "GET /api/orders/{id}/admin → 200 paid (the callback is what moves the order)",
+    `status=${paidOrder.json?.payload?.status}`,
+  );
+
+  const committedSku = await request(`/api/products/${commerceProductId}/skus/${commerceSkuId}`, { token });
+  expect(
+    committedSku.json?.payload?.reserved_quantity === 0 &&
+      committedSku.json?.payload?.committed_quantity === 2 &&
+      committedSku.json?.payload?.available_quantity === 3,
+    "  the reservation became a commitment: reserved 0, committed 2, available 3",
+    `reserved=${committedSku.json?.payload?.reserved_quantity} committed=${committedSku.json?.payload?.committed_quantity} available=${committedSku.json?.payload?.available_quantity}`,
+  );
+
+  // The confirmation message is generated by the payment, not by the UI.
+  const messagesAfterPayment = await request(`/api/orders/${orderId}/messages/`, { token });
+  const confirmation = (messagesAfterPayment.json?.payload?.items ?? []).find(
+    (message) => message.kind === "order_confirmation",
+  );
+  expect(
+    messagesAfterPayment.status === 200 && confirmation?.status === "sent",
+    "GET /api/orders/{id}/messages/ → 200 with a sent order_confirmation",
+    `got ${messagesAfterPayment.status} / status=${confirmation?.status}`,
+  );
+
+  // A customer sees nothing until the order is associated with their account.
+  const mineBefore = await request("/api/me/orders/?page=1&size=10", { token: commerceCustomerToken });
+  expect(
+    mineBefore.status === 200 && mineBefore.json?.payload?.total === 0,
+    "GET /api/me/orders/ → 200, the guest order is not in the book yet",
+    `total=${mineBefore.json?.payload?.total}`,
+  );
+
+  // Claiming proves two things at once: you hold the access token **and** the order was placed for the
+  // email on your account. Anything else is answered exactly like an order that does not exist.
+  const foreignAssociation = await request("/api/me/orders/guest-associations/request", {
+    method: "POST",
+    token: commerceOtherToken,
+    body: { order_id: orderId, guest_access_token: guestToken },
+  });
+  expect(
+    foreignAssociation.status === 404,
+    "POST /api/me/orders/guest-associations/request (valid token, different account's email) → 404",
+    `got ${foreignAssociation.status}`,
+  );
+
+  const associationRequest = await request("/api/me/orders/guest-associations/request", {
+    method: "POST",
+    token: commerceCustomerToken,
+    body: { order_id: orderId, guest_access_token: guestToken },
+  });
+  const associationToken = associationRequest.json?.payload?.verification_token;
+  const associationConfirm = await request("/api/me/orders/guest-associations/confirm", {
+    method: "POST",
+    token: commerceCustomerToken,
+    body: { verification_token: associationToken },
+  });
+  expect(
+    associationRequest.status === 200 &&
+      associationRequest.json?.payload?.accepted === true &&
+      Boolean(associationToken),
+    "POST /api/me/orders/guest-associations/request → 200 accepted with a verification token",
+    `got ${associationRequest.status}`,
+  );
+  expect(
+    associationConfirm.status === 200 && associationConfirm.json?.payload?.customer_id,
+    "  …/confirm → 200, the order now belongs to the customer",
+    `got ${associationConfirm.status}`,
+  );
+
+  const mineAfter = await request("/api/me/orders/?page=1&size=10", { token: commerceCustomerToken });
+  const myOrderRead = await request(`/api/me/orders/${orderId}`, { token: commerceCustomerToken });
+  expect(
+    mineAfter.json?.payload?.total === 1 && myOrderRead.status === 200,
+    "GET /api/me/orders/ (page shape {items,total,page,size,pages}) now lists it",
+    `total=${mineAfter.json?.payload?.total} / read=${myOrderRead.status}`,
+  );
+
+  // Cross-account isolation is a 404, exactly like the address book.
+  const foreignOrder = await request(`/api/me/orders/${orderId}`, { token: commerceOtherToken });
+  const foreignCancel = await request(`/api/me/orders/${orderId}/cancel`, {
+    method: "POST",
+    token: commerceOtherToken,
+    body: { reason: "not mine" },
+  });
+  expect(
+    foreignOrder.status === 404 && foreignCancel.status === 404,
+    "  another customer's order answers 404 for read and cancel (not 403)",
+    `${foreignOrder.status} / ${foreignCancel.status}`,
+  );
+
+  // Back-office fulfilment: process → ship → deliver, each guarded by its own permission.
+  const illegalDeliver = await request(`/api/orders/${orderId}/deliver`, { method: "POST", token });
+  expect(
+    illegalDeliver.status === 422 && illegalDeliver.json?.payload?.details?.field === "status",
+    "POST /api/orders/{id}/deliver (from paid) → 422 field=status",
+    `got ${illegalDeliver.status} / field=${illegalDeliver.json?.payload?.details?.field}`,
+  );
+
+  const processing = await request(`/api/orders/${orderId}/processing`, { method: "POST", token });
+  const shipped = await request(`/api/orders/${orderId}/ship`, {
+    method: "POST",
+    token,
+    body: { carrier: "Smoke Post", tracking_reference: `TRK-${suffix}` },
+  });
+  const delivered = await request(`/api/orders/${orderId}/deliver`, { method: "POST", token });
+  expect(
+    processing.json?.payload?.status === "processing" &&
+      shipped.json?.payload?.status === "shipped" &&
+      shipped.json?.payload?.carrier === "Smoke Post",
+    "POST …/processing → …/ship → the order carries the carrier and tracking reference",
+    `${processing.status}/${shipped.status} carrier=${shipped.json?.payload?.carrier}`,
+  );
+  expect(
+    delivered.json?.payload?.status === "delivered" && Boolean(delivered.json?.payload?.delivered_at),
+    "POST …/deliver → 200 delivered with delivered_at",
+    `got ${delivered.status} / ${delivered.json?.payload?.status}`,
+  );
+
+  const messagesAfterShip = await request(`/api/orders/${orderId}/messages/`, { token });
+  expect(
+    (messagesAfterShip.json?.payload?.items ?? []).some(
+      (message) => message.kind === "dispatch_notice" && message.status === "sent",
+    ),
+    "  shipping generated a sent dispatch_notice",
+    `${(messagesAfterShip.json?.payload?.items ?? []).length} message(s)`,
+  );
+
+  const cancelDelivered = await request(`/api/orders/${orderId}/cancel`, {
+    method: "POST",
+    token,
+    body: { reason: "too late" },
+  });
+  expect(
+    cancelDelivered.status === 422 && cancelDelivered.json?.payload?.details?.field === "status",
+    "POST /api/orders/{id}/cancel (delivered) → 422 field=status — dispatched orders are final",
+    `got ${cancelDelivered.status}`,
+  );
+
+  // Refunds only exist for a cancelled order that was paid.
+  const refundNotCancelled = await request(`/api/orders/${orderId}/refund`, {
+    method: "POST",
+    token,
+    body: { refund_reference: `RF-${suffix}` },
+  });
+  expect(
+    refundNotCancelled.status === 422,
+    "POST /api/orders/{id}/refund (delivered) → 422 — a delivered order cannot be refunded",
+    `got ${refundNotCancelled.status}`,
+  );
+
+  // A second order, cancelled from `awaiting_payment` — the guest does it themselves with the token.
+  const secondCart = await request("/api/carts/", { method: "POST", body: {} });
+  const secondCartId = secondCart.json?.payload?.id;
+  await request(`/api/carts/${secondCartId}/lines/`, {
+    method: "POST",
+    body: { sku_id: commerceSkuId, quantity: 1 },
+  });
+  const guestCheckout = await request("/api/checkouts/", {
+    method: "POST",
+    body: { ...checkoutBody, cart_id: secondCartId, delivery_method: "standard" },
+  });
+  const guestOrder = guestCheckout.json?.payload;
+  expect(
+    guestCheckout.status === 200 &&
+      guestOrder?.status === "awaiting_payment" &&
+      guestOrder?.delivery_fee_cents === 500 &&
+      guestOrder?.total_cents === 3099,
+    "second order: standard delivery adds 500 (2599 + 500)",
+    `got ${guestCheckout.status} / total=${guestOrder?.total_cents}`,
+  );
+
+  const guestCancelWrongToken = await request(`/api/orders/${guestOrder?.id}/guest-cancel`, {
+    method: "POST",
+    body: { guest_access_token: "wrong", reason: "nope" },
+  });
+  const guestCancel = await request(`/api/orders/${guestOrder?.id}/guest-cancel`, {
+    method: "POST",
+    body: {
+      guest_access_token: guestOrder?.guest_access_token,
+      reason: "smoke test cancellation",
+    },
+  });
+  expect(
+    guestCancelWrongToken.status === 404,
+    "POST /api/orders/{id}/guest-cancel (wrong token) → 404",
+    `got ${guestCancelWrongToken.status}`,
+  );
+  expect(
+    guestCancel.status === 200 &&
+      guestCancel.json?.payload?.status === "cancelled" &&
+      guestCancel.json?.payload?.refund_required === false,
+    "  the guest cancels their own unpaid order → cancelled, no refund required",
+    `got ${guestCancel.status} / refund_required=${guestCancel.json?.payload?.refund_required}`,
+  );
+
+  const releasedSku = await request(`/api/products/${commerceProductId}/skus/${commerceSkuId}`, { token });
+  expect(
+    releasedSku.json?.payload?.reserved_quantity === 0,
+    "  cancelling released the reservation (reserved 0)",
+    `reserved=${releasedSku.json?.payload?.reserved_quantity}`,
+  );
+
+  const cancelledAgain = await request(`/api/orders/${guestOrder?.id}/guest-cancel`, {
+    method: "POST",
+    body: { guest_access_token: guestOrder?.guest_access_token, reason: "again" },
+  });
+  expect(
+    cancelledAgain.status === 422 && cancelledAgain.json?.payload?.details?.field === "status",
+    "  cancelling again → 422 field=status: owner cancellation exists only for awaiting_payment",
+    `got ${cancelledAgain.status} / field=${cancelledAgain.json?.payload?.details?.field}`,
+  );
+
+  const cancelWithoutReason = await request(`/api/orders/${guestOrder?.id}/guest-cancel`, {
+    method: "POST",
+    body: { guest_access_token: guestOrder?.guest_access_token },
+  });
+  expect(
+    cancelWithoutReason.status === 422 && Array.isArray(cancelWithoutReason.json?.detail),
+    "  a missing reason → FastAPI {detail:[…]} (the DTO, not the envelope)",
+    `got ${cancelWithoutReason.status}`,
+  );
+
+  // A third order: paid, then cancelled by the back office — this is where a refund becomes due.
+  const thirdCart = await request("/api/carts/", { method: "POST", body: {} });
+  const thirdCartId = thirdCart.json?.payload?.id;
+  await request(`/api/carts/${thirdCartId}/lines/`, {
+    method: "POST",
+    body: { sku_id: commerceSkuId, quantity: 1 },
+  });
+  const thirdCheckout = await request("/api/checkouts/", {
+    method: "POST",
+    body: { ...checkoutBody, cart_id: thirdCartId },
+  });
+  const paidThenCancelled = thirdCheckout.json?.payload;
+  if (paidThenCancelled?.id) ordersToCancel.push(paidThenCancelled.id);
+
+  await request(`/api/orders/${paidThenCancelled?.id}/payment-attempts/`, {
+    method: "POST",
+    body: { guest_access_token: paidThenCancelled?.guest_access_token },
+  });
+  const thirdAttempts = await request(
+    `/api/orders/${paidThenCancelled?.id}/payment-attempts/?guest_access_token=${encodeURIComponent(paidThenCancelled?.guest_access_token ?? "")}`,
+  );
+  const thirdAttemptId = thirdAttempts.json?.payload?.items?.[0]?.id;
+  const thirdPaid = await request(`/api/payment-attempts/${thirdAttemptId}/verify`, {
+    method: "POST",
+    body: {
+      order_id: paidThenCancelled?.id,
+      amount_cents: paidThenCancelled?.total_cents,
+      outcome: "succeeded",
+      provider_reference: `SMOKE-${suffix}-3`,
+    },
+  });
+  expect(
+    thirdPaid.json?.payload?.order?.status === "paid",
+    "third order: paid before the back office cancels it",
+    `status=${thirdPaid.json?.payload?.order?.status}`,
+  );
+
+  const guestCancelPaid = await request(`/api/orders/${paidThenCancelled?.id}/guest-cancel`, {
+    method: "POST",
+    body: { guest_access_token: paidThenCancelled?.guest_access_token, reason: "mine" },
+  });
+  expect(
+    guestCancelPaid.status === 422 && /unpaid orders/.test(guestCancelPaid.json?.message ?? ""),
+    "  the owner cannot cancel a paid order → 422 'Only unpaid orders can be cancelled by their owner'",
+    `got ${guestCancelPaid.status} / ${guestCancelPaid.json?.message}`,
+  );
+
+  const adminCancel = await request(`/api/orders/${paidThenCancelled?.id}/cancel`, {
+    method: "POST",
+    token,
+    body: { reason: "smoke test cancellation" },
+  });
+  expect(
+    adminCancel.status === 200 &&
+      adminCancel.json?.payload?.status === "cancelled" &&
+      adminCancel.json?.payload?.refund_required === true,
+    "POST /api/orders/{id}/cancel on a paid order → 200 cancelled with refund_required true",
+    `got ${adminCancel.status} / refund_required=${adminCancel.json?.payload?.refund_required}`,
+  );
+
+  const refund = await request(`/api/orders/${paidThenCancelled?.id}/refund`, {
+    method: "POST",
+    token,
+    body: { refund_reference: `RF-${suffix}` },
+  });
+  expect(
+    refund.status === 200 &&
+      refund.json?.payload?.refund_reference === `RF-${suffix}` &&
+      Boolean(refund.json?.payload?.refunded_at),
+    "POST /api/orders/{id}/refund → 200 with the reference recorded",
+    `got ${refund.status} / ref=${refund.json?.payload?.refund_reference}`,
+  );
+
+  const cancelAlreadyCancelled = await request(`/api/orders/${paidThenCancelled?.id}/cancel`, {
+    method: "POST",
+    token,
+    body: { reason: "again" },
+  });
+  expect(
+    cancelAlreadyCancelled.status === 200 &&
+      cancelAlreadyCancelled.json?.payload?.status === "cancelled" &&
+      cancelAlreadyCancelled.json?.payload?.refund_required === true,
+    "  the back office cancelling an already-cancelled order is a no-op (200, refund still due)",
+    `got ${cancelAlreadyCancelled.status}`,
+  );
+
+  const refundAgain = await request(`/api/orders/${paidThenCancelled?.id}/refund`, {
+    method: "POST",
+    token,
+    body: { refund_reference: `RF-${suffix}` },
+  });
+  const refundDifferent = await request(`/api/orders/${paidThenCancelled?.id}/refund`, {
+    method: "POST",
+    token,
+    body: { refund_reference: `RF-${suffix}-other` },
+  });
+  expect(
+    refundAgain.status === 200 && refundDifferent.status === 422,
+    "  the same reference is a no-op, a different one → 422 (money is never returned twice)",
+    `${refundAgain.status} / ${refundDifferent.status}`,
+  );
+
+  const anonymousRefund = await request(`/api/orders/${paidThenCancelled?.id}/refund`, {
+    method: "POST",
+    body: { refund_reference: "nope" },
+  });
+  expect(
+    anonymousRefund.status === 401,
+    "  refund is permission-gated: 401 without a session (orders:refund)",
+    `got ${anonymousRefund.status}`,
+  );
+
+  // RBAC: the four order permissions are what the back office is gated on.
+  const customerOrders = await request("/api/orders/?page=1&size=10", { token: commerceCustomerToken });
+  const anonymousOrders = await request("/api/orders/?page=1&size=10");
+  const anonymousMessages = await request(`/api/orders/${orderId}/messages/`);
+  expect(
+    customerOrders.status === 403 &&
+      customerOrders.json?.payload?.error_code === "FORBIDDEN" &&
+      anonymousOrders.status === 401,
+    "GET /api/orders/ → 401 anonymous, 403 FORBIDDEN for a customer without orders:read",
+    `${anonymousOrders.status} / ${customerOrders.status}`,
+  );
+  expect(
+    anonymousMessages.status === 401,
+    "  the notification log is permission-gated too (401 anonymous)",
+    `got ${anonymousMessages.status}`,
+  );
+
+  const orderSearch = await request(`/api/orders/?page=1&size=10&search=${encodeURIComponent(`SMOKE-${suffix}`)}`, {
+    token,
+  });
+  const orderByStatus = await request("/api/orders/?page=1&size=10&status=paid", { token });
+  expect(
+    orderSearch.status === 200 && orderByStatus.status === 200,
+    "GET /api/orders/?search= / ?status= → 200 (both filters are accepted)",
+    `${orderSearch.status} / total=${orderSearch.json?.payload?.total} / paid=${orderByStatus.json?.payload?.total}`,
+  );
+
+  const adminRead = await request(`/api/orders/${orderId}/admin`, { token });
+  const customerAdminRead = await request(`/api/orders/${orderId}/admin`, { token: commerceCustomerToken });
+  expect(
+    adminRead.status === 200 && customerAdminRead.status === 403,
+    "GET /api/orders/{id}/admin needs orders:read (403 without it)",
+    `${adminRead.status} / ${customerAdminRead.status}`,
+  );
+
+  // Cleanup: cancel whatever is still live so the SKU's stock returns, then archive the product.
+  for (const id of ordersToCancel) {
+    const current = await request(`/api/orders/${id}/admin`, { token });
+    if (current.json?.payload?.status === "awaiting_payment" || current.json?.payload?.status === "paid") {
+      await request(`/api/orders/${id}/cancel`, { method: "POST", token, body: { reason: "smoke cleanup" } });
+    }
+    if (current.json?.payload?.status === "cancelled" && current.json?.payload?.refund_required) {
+      await request(`/api/orders/${id}/refund`, {
+        method: "POST",
+        token,
+        body: { refund_reference: `RF-cleanup-${suffix}` },
+      });
+    }
+  }
+  for (const [what, path] of commerceCleanup) {
+    const removed = await request(path, { method: "DELETE", token });
+    if (![200, 204, 404].includes(removed.status)) {
+      fail(`cleanup DELETE ${what} ${path}`, `got ${removed.status}`);
+    }
+  }
+  for (const [what, path] of commerceCategoryCleanup) {
+    const removed = await request(path, { method: "DELETE", token });
+    if (![200, 204, 404].includes(removed.status)) {
+      fail(`cleanup DELETE ${what} ${path}`, `got ${removed.status}`);
+    }
+  }
+  for (const userId of commerceUserIds) {
+    const removed = await request(`/api/users/${userId}`, { method: "DELETE", token });
+    if (![200, 204, 404].includes(removed.status)) {
+      fail("cleanup DELETE the commerce customer", `got ${removed.status}`);
+    }
+  }
+
   // 6. Unauthenticated access must stay a 401 envelope (this is what triggers a silent refresh).
   const anonymous = await request("/api/auth/me");
   expect(

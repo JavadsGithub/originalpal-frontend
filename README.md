@@ -201,8 +201,9 @@ Three things about this surface are deliberate, all of them verified live (audit
 
 ## Roadmap
 
-The backend exposes 114 operations; the frontend consumes auth, users, roles, the catalog back office
-and the public storefront reads. Next slices, in the order the audit suggests:
+The backend exposes 114 operations; the frontend consumes auth, users, roles, the catalog back office,
+the public storefront reads and the whole commerce life cycle. Next slices, in the order the audit
+suggests:
 
 1. ~~Admin back-office: users + roles + permission pickers~~ — done (§9 of the audit).
 2. ~~Catalog management: products, SKUs, categories, attributes, brands (+ uploads for images)~~ — done
@@ -210,5 +211,9 @@ and the public storefront reads. Next slices, in the order the audit suggests:
 3. ~~Customer account: register, profile update, password recovery~~ — done (§11 of the audit).
 4. ~~Storefront browsing: public catalog, category/search pages, homepage blocks~~ — done (§12 of the
    audit).
-5. Cart → checkout → orders: `/api/carts` (guest and customer), delivery options, checkout sessions,
-   payments, orders, order messages, policies.
+5. ~~Cart → checkout → orders: `/api/carts` (guest and customer), delivery options, checkout sessions,
+   payments, orders, order messages, back-office fulfilment~~ — done (§13 of the audit): `/cart`,
+   `/checkout`, the guest order page with the mock payment panel, `/orders/lookup`, `/account/orders`,
+   `/admin/orders` and the four order permissions.
+6. Remaining backend surfaces: policies, brands/attributes admin polish, and the follow-ups in
+   `docs/integration/backend-follow-ups/` (now #1–#21).
