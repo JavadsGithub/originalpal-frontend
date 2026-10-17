@@ -10,7 +10,6 @@ import useDeliverOrder from "@/data/feature/order/useDeliverOrder";
 import useCancelOrder from "@/data/feature/order/useCancelOrder";
 import useRecordRefund from "@/data/feature/order/useRecordRefund";
 import OrderMessagesPanel from "@/components/feature/order/OrderMessagesPanel/OrderMessagesPanel";
-import OrderStatusBadge from "@/components/feature/order/OrderStatusBadge/index";
 import { ORDER_STATUS_LABELS } from "@/lib/order-rules";
 import type { Order } from "@/lib/types/order";
 import Link from "next/link";
@@ -84,11 +83,12 @@ export default function AdminOrderDetail({ orderId }: { orderId: string }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      {/* The status pill lives in the order view below, next to the order id — a second one up here
+          said the same thing twice. */}
+      <div>
         <Link href="/admin/orders" className="text-xs text-muted-foreground hover:underline">
           ← All orders
         </Link>
-        <OrderStatusBadge status={order.status} refundRequired={order.refund_required} />
       </div>
 
       <AdminOrderDetailUI
