@@ -41,7 +41,7 @@ test.describe("user management", () => {
     // itself to change the state).
     await page.getByRole("checkbox", { name: "Admin role" }).click();
     await expect(page.getByRole("checkbox", { name: "Admin role" })).toBeChecked();
-    await page.getByRole("button", { name: "Close" }).click();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
 
     // Delete — DELETE /api/users/{id}.
     await row.getByRole("button", { name: "Delete" }).click();

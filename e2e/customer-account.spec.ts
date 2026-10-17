@@ -160,7 +160,7 @@ test.describe("customer account", () => {
       await page.getByRole("button", { name: "Sign in" }).click();
       // Scoped to the form's own alert: the App Router's route announcer also carries `role="alert"`,
       // and it is always empty.
-      await expect(page.getByTestId("login-error")).toContainText(/validation|credentials/i);
+      await expect(page.getByTestId("login-error")).toContainText(/incorrect username or password/i);
     } finally {
       await deleteCustomer(request, username);
     }

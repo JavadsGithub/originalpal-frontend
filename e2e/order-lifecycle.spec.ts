@@ -126,7 +126,9 @@ test.describe("cart, checkout and orders", () => {
       await expect(page.getByTestId("add-to-cart-added")).toContainText("In the cart");
 
       await page.goto("/cart");
-      await expect(page.getByTestId(`cart-line-${SKU_CODE}`)).toContainText("2 × €25.99 = €51.98");
+      // The line is keyed by the SKU's id, not its code — the cart's own identifiers are what the API
+      // speaks, and a code is only a label a merchant reads.
+      await expect(page.getByTestId(`cart-line-${seeded.skuId}`)).toContainText("2 × €25.99 = €51.98");
 
       await page.getByRole("button", { name: "Checkout" }).click();
       await expect(page).toHaveURL(/\/checkout$/);
