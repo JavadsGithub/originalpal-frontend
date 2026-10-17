@@ -32,7 +32,16 @@ export default defineConfig({
     baseURL,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
+    // The defaults (5s to act, 5s to assert, no navigation budget) assume a warm server. These specs
+    // run against a freshly started one, and the first request to a route compiles it — so a guard
+    // redirect or a sign-in that needs two round-trips can legitimately take longer than five
+    // seconds. Being generous here is cheaper than a flaky suite: a genuinely broken assertion still
+    // fails, it just takes longer to say so.
+    actionTimeout: 15_000,
+    navigationTimeout: 45_000,
   },
+
+  expect: { timeout: 15_000 },
 
   projects: [
     {

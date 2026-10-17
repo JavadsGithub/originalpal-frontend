@@ -143,12 +143,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # The specs run against the production build, not `next dev`: a dev server compiles each route on
+      # first request, so every spec would be racing a compiler rather than the app. It also means the
+      # suite proves the artefact that ships.
+      - name: Build the frontend
+        run: pnpm build
+
       - name: Start the frontend
         run: |
-          nohup pnpm dev > /tmp/frontend.log 2>&1 &
-          # `/api/ping` through the proxy proves both hops: the Next.js server is listening and it can
-          # reach the backend.
-          for attempt in $(seq 1 180); do
+          nohup pnpm start > /tmp/frontend.log 2>&1 &
+          # `/api/ping` through the proxy proves both hops: the production server is listening and it
+          # can reach the backend.
+          for attempt in $(seq 1 120); do
             if curl -fsS http://127.0.0.1:3000/api/ping > /dev/null; then
               echo "frontend is up after ${attempt}s"
               exit 0
@@ -160,8 +166,8 @@ jobs:
           exit 1
 
       - name: Warm the routes the specs open
-        # `next dev` compiles a route on first request. Doing it here keeps that time out of the
-        # per-test timeouts in the Playwright specs.
+        # Cheap sanity check that every screen the suite touches renders — and a clear failure here is
+        # much easier to read than nineteen browser timeouts.
         run: |
           for path in / /search /categories /cart /checkout /orders/lookup /account/orders /admin/orders /login; do
             echo -n "${path} "

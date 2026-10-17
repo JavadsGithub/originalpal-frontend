@@ -121,10 +121,12 @@ kinds of proof on purpose:
 | --- | --- | --- |
 | `checks` | `pnpm check` — types, ESLint, the permission registry, the unit suite | nothing but the lockfile |
 | `build` | `pnpm build` — the production build (fetches the Google fonts, so it needs a network-enabled runner) | nothing but the lockfile |
-| `integration` | clones the backend at the commit this repository was audited against, boots it on SQLite, serves this app in front of it, then runs `pnpm smoke` **and** the Playwright suite | nothing, the workflow sets it all up |
+| `integration` | clones the backend at the commit this repository was audited against, boots it on SQLite, builds this app and serves the production build in front of it, then runs `pnpm smoke` **and** the Playwright suite | nothing, the workflow sets it all up |
 
 The `integration` job is the one that matters: it is the only place the 19 browser specs actually
-execute. Reproduce it locally by starting the backend on `:8004` and `pnpm dev`, then
+execute — against `next start`, not `next dev`, so what passes is what ships. A failed run posts the
+failure list and a browser diagnostic report as a PR comment (`scripts/diagnose-e2e.mjs`,
+`scripts/summarize-e2e.mjs`), because a job log is not always reachable. Reproduce it locally by starting the backend on `:8004` and `pnpm dev`, then
 `pnpm smoke && pnpm test:e2e` (with `E2E_NO_SERVER=1` if the dev server is already running). Bumping
 `BACKEND_REF` in the workflow is how a backend change gets tested against this frontend — a red job
 afterwards is the drift signal.
