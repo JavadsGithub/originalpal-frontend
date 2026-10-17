@@ -21,6 +21,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  # Only used by the failure step below, which posts the browser failures as a PR comment: the job
+  # log lives on a host some networks cannot reach, the PR itself does not.
+  pull-requests: write
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -169,7 +175,32 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Screens (Playwright)
-        run: pnpm test:e2e
+        run: |
+          set -o pipefail
+          pnpm test:e2e 2>&1 | tee /tmp/e2e.log
+
+      - name: Report the browser failures on the pull request
+        if: failure() && github.event_name == 'pull_request'
+        # Reporting is a courtesy; a token without comment rights must not mask the real failure.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo '<!-- playwright-failure -->'
+            echo '### Playwright reported failures'
+            echo
+            echo 'The specs ran against the live backend; the tail of the run is below.'
+            echo 'Server logs are in the job output under **Server logs**.'
+            echo
+            echo '```'
+            # Drop colour escapes, keep the last 400 lines: that is where the failed specs and their
+            # assertions are, and a comment has a size limit.
+            sed -e 's/\x1b\[[0-9;]*m//g' /tmp/e2e.log 2>/dev/null | tail -400 || echo 'no log captured'
+            echo '```'
+          } > /tmp/e2e-comment.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/e2e-comment.md
 
       - name: Server logs
         if: failure()
