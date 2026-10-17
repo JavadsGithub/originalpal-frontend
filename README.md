@@ -96,7 +96,7 @@ In short:
 | `pnpm permissions:check` | fail if the generated registry is stale (CI gate) |
 | `pnpm api:generate` | orval client generation from `OPENAPI_JSON_URL` (output in git-ignored `lib/api`) |
 | `node scripts/seed-storefront-demo.mjs` | seeds a small `demo-` labelled catalog (categories, one variant attribute, three published products, two homepage blocks) through the API so the storefront has something to show; `--clean` removes it again |
-| `pnpm smoke` | end-to-end contract check through the proxy against the live backend: auth lifecycle, RBAC, pagination, the catalog (upload → product → SKU → publish gates → archive) the customer account (register → profile → password recovery → address book) and the storefront (public catalog, filters, homepage blocks) |
+| `pnpm smoke` | end-to-end contract check through the proxy against the live backend: auth lifecycle, RBAC, pagination, the catalog (upload → product → SKU → publish gates → archive), the customer account (register → profile → password recovery → address book), the storefront (public catalog, filters, homepage blocks) and the commerce life cycle (cart → delivery → checkout → payment → fulfilment → refund). 178 checks |
 
 ## Testing
 
@@ -106,11 +106,28 @@ Three layers, from fastest to most convincing:
 | --- | --- | --- |
 | Unit / integration | `pnpm test` | the client layer against MSW replicas of live responses: envelope unwrapping, 401→refresh→replay, 422 normalisation, permission gates, table behaviour, the customer rules |
 | Headless contract | `pnpm smoke` | the real stack — browser-facing contract → `/api/*` proxy → FastAPI. Walks the admin account lifecycle (create inactive → activate → assign role → delete), the catalog lifecycle (upload → category/attribute links → product → SKU → the three publish gates → archive) the customer lifecycle (register → profile → recovery → addresses) and the storefront (anonymous public catalog, search/category filters, the active-SKU roll-up, homepage block rules), cleaning up after itself |
-| Browser end-to-end | `pnpm test:e2e` | the same flows *through the UI*, including session restore after a reload |
+| Browser end-to-end | `pnpm test:e2e` | the same flows *through the UI* — including session restore after a reload and the order life cycle from the storefront's add-to-cart to the back office's `delivered` |
 
 `pnpm test:e2e` needs a browser: `pnpm exec playwright install chromium`, a running backend with seed
 data, and (optionally) `E2E_BASE_URL` / `E2E_USERNAME` / `E2E_PASSWORD`. In a sandbox without access to
 the Playwright browser CDN, use `pnpm smoke` — it covers the same endpoints without a browser.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request, on `main` and on demand. It separates the two
+kinds of proof on purpose:
+
+| Job | What it runs | Needs |
+| --- | --- | --- |
+| `checks` | `pnpm check` — types, ESLint, the permission registry, the unit suite | nothing but the lockfile |
+| `build` | `pnpm build` — the production build (fetches the Google fonts, so it needs a network-enabled runner) | nothing but the lockfile |
+| `integration` | clones the backend at the commit this repository was audited against, boots it on SQLite, serves this app in front of it, then runs `pnpm smoke` **and** the Playwright suite | nothing, the workflow sets it all up |
+
+The `integration` job is the one that matters: it is the only place the 19 browser specs actually
+execute. Reproduce it locally by starting the backend on `:8004` and `pnpm dev`, then
+`pnpm smoke && pnpm test:e2e` (with `E2E_NO_SERVER=1` if the dev server is already running). Bumping
+`BACKEND_REF` in the workflow is how a backend change gets tested against this frontend — a red job
+afterwards is the drift signal.
 
 ## Back office
 

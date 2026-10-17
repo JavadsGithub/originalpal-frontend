@@ -1,0 +1,193 @@
+# Continuous integration for the storefront and back office.
+#
+# Two different kinds of proof are needed, so there are two different jobs:
+#
+#   * `checks` and `build` never touch the network beyond the package registries. They are the fast
+#     gate: types, lint, the permission registry, the unit suite and a production build.
+#   * `integration` boots the *real* FastAPI backend from its own repository, proxies it through this
+#     app's `/api/[...path]` route handler, and then runs the two suites that only mean something
+#     against a live stack: `scripts/smoke-integration.mjs` (the HTTP contract) and the Playwright
+#     specs (the screens).
+#
+# The backend is pinned to the commit every finding in docs/integration/ was recorded against. Bump
+# it deliberately when a fix lands there — a red `integration` job after a bump is the signal that the
+# two projects have drifted.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  BACKEND_REPOSITORY: https://github.com/JavadsGithub/originalpal-server-python
+  BACKEND_REF: 3d82827bca55928d7ad540e025a1263ded3f72f5
+  # The browser talks to its own origin; Next.js forwards `/api/*` to the backend. Nothing needs CORS.
+  API_PROXY_TARGET: http://127.0.0.1:8004
+  SMOKE_BASE_URL: http://127.0.0.1:3000
+  E2E_BASE_URL: http://127.0.0.1:3000
+  E2E_NO_SERVER: "1"
+
+jobs:
+  checks:
+    name: Types, lint, permission registry and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # typecheck → eslint → permissions:check → vitest, i.e. exactly what `pnpm check` does locally.
+      - run: pnpm check
+
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # `app/layout.tsx` uses `next/font/google`, which downloads fonts at build time — fine on a
+      # runner, and the reason this step cannot pass in a network-restricted sandbox
+      # (docs/integration/environment.md lists the local workaround).
+      - run: pnpm build
+
+  integration:
+    name: Smoke and Playwright against the real backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone the backend at the audited commit
+        run: |
+          git clone --quiet "$BACKEND_REPOSITORY" ../originalpal-server-python
+          git -C ../originalpal-server-python checkout --quiet "$BACKEND_REF"
+          git -C ../originalpal-server-python log -1 --oneline
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      # SQLite keeps the job to one container; the backend supports it through `DATABASE_URL`, and
+      # every contract the frontend relies on is the same code path. `aiosqlite` ships in the dev
+      # group, which `uv sync --locked` installs.
+      - name: Install the backend
+        working-directory: ../originalpal-server-python
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///${{ github.workspace }}/ci.db
+        run: uv sync --locked
+
+      - name: Migrate and seed
+        working-directory: ../originalpal-server-python
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///${{ github.workspace }}/ci.db
+        run: |
+          uv run --locked python -m alembic upgrade head
+          uv run --locked python -m scripts.seed
+
+      - name: Start the backend
+        working-directory: ../originalpal-server-python
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///${{ github.workspace }}/ci.db
+        run: |
+          nohup uv run --locked uvicorn app.main:app --host 127.0.0.1 --port 8004 > /tmp/backend.log 2>&1 &
+          for attempt in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8004/api/ping > /dev/null; then
+              echo "backend is up after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the backend did not answer /api/ping"
+          tail -100 /tmp/backend.log
+          exit 1
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Start the frontend
+        run: |
+          nohup pnpm dev > /tmp/frontend.log 2>&1 &
+          # `/api/ping` through the proxy proves both hops: the Next.js server is listening and it can
+          # reach the backend.
+          for attempt in $(seq 1 180); do
+            if curl -fsS http://127.0.0.1:3000/api/ping > /dev/null; then
+              echo "frontend is up after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the frontend did not answer /api/ping"
+          tail -100 /tmp/frontend.log
+          exit 1
+
+      - name: Warm the routes the specs open
+        # `next dev` compiles a route on first request. Doing it here keeps that time out of the
+        # per-test timeouts in the Playwright specs.
+        run: |
+          for path in / /search /categories /cart /checkout /orders/lookup /account/orders /admin/orders /login; do
+            echo -n "${path} "
+            curl -fsS -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:3000${path}"
+          done
+
+      - name: HTTP contract (smoke)
+        run: pnpm smoke
+
+      - name: Install the browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Screens (Playwright)
+        run: pnpm test:e2e
+
+      - name: Server logs
+        if: failure()
+        run: |
+          echo "::group::backend"
+          tail -200 /tmp/backend.log || true
+          echo "::endgroup::"
+          echo "::group::frontend"
+          tail -200 /tmp/frontend.log || true
+          echo "::endgroup::"
+
+      - name: Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+          if-no-files-found: ignore
