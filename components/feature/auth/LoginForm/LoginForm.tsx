@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@/components/layout/auth-provider";
+import { toApiError } from "@/lib/api-error";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import LoginFormUI from "./index";
@@ -16,8 +17,18 @@ export default function LoginForm({ onSuccessRedirect }: LoginFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const redirectUrl =
-    onSuccessRedirect || searchParams.get("redirect") || "/examples/admin/users";
+  // `?redirect=` is set by AuthGuard; default to the back office overview.
+  const redirectUrl = onSuccessRedirect || searchParams.get("redirect") || "/admin";
+
+  /**
+   * The customer flows end here, so the notice is derived from the query string the injector that
+   * sent them over appended (`?registered=1` after self-registration, `?reset=1` after a reset).
+   */
+  const notice = searchParams.get("registered")
+    ? "Account created. Sign in with the password you just chose."
+    : searchParams.get("reset")
+      ? "Password updated. Sign in with your new password."
+      : null;
 
   const handleSubmit = async (credentials: { username: string; password: string }) => {
     setIsLoading(true);
@@ -26,13 +37,9 @@ export default function LoginForm({ onSuccessRedirect }: LoginFormProps) {
     try {
       await login(credentials);
       router.push(redirectUrl);
-    } catch (err: unknown) {
-      const error = err as { response?: { data?: { message?: string } }; message?: string };
-      setErrorMessage(
-        error.response?.data?.message ||
-          error.message ||
-          "Failed to authenticate. Please check your credentials.",
-      );
+    } catch (error: unknown) {
+      // `ApiError` already carries the backend's message for both error shapes (envelope and 422).
+      setErrorMessage(toApiError(error).message);
     } finally {
       setIsLoading(false);
     }
@@ -42,6 +49,7 @@ export default function LoginForm({ onSuccessRedirect }: LoginFormProps) {
     <LoginFormUI
       isLoading={isLoading}
       errorMessage={errorMessage}
+      notice={notice}
       callbacks={{
         onSubmit: handleSubmit,
       }}

@@ -1,29 +1,29 @@
 import { customFetcher } from "@/lib/fetcher";
-import type { PaginatedPayload, User } from "@/lib/types/auth";
+import { toApiError } from "@/lib/api-error";
+import type { User } from "@/lib/types/auth";
+import {
+  DEFAULT_PAGE,
+  DEFAULT_PAGE_SIZE,
+  normalizePage,
+  type PageParams,
+  type PaginatedPayload,
+} from "@/lib/types/api";
+import { userKeys } from "@/data/query-keys";
 import { useQuery } from "@tanstack/react-query";
 
-export interface UseGetUsersParams {
-  page?: number;
-  size?: number;
-}
-
-export interface UseGetUsersReturn {
-  users: User[];
-  total: number;
-  page: number;
-  size: number;
-  pages: number;
-  isLoading: boolean;
-  isError: boolean;
-  error: unknown;
-  refetch: () => Promise<unknown>;
-}
-
-export function useGetUsers(params: UseGetUsersParams = {}): UseGetUsersReturn {
-  const { page = 1, size = 50 } = params;
+/**
+ * `GET /api/users/` — requires `users:read` (super users bypass the check).
+ *
+ * Two backend behaviours are encoded here:
+ *  - the collection path is declared with a trailing slash; without it FastAPI replies 307;
+ *  - the payload is `fastapi_pagination.Page` → `{items,total,page,size,pages}`.
+ */
+export function useGetUsers(params: PageParams = {}) {
+  const page = params.page ?? DEFAULT_PAGE;
+  const size = params.size ?? DEFAULT_PAGE_SIZE;
 
   const query = useQuery<PaginatedPayload<User>>({
-    queryKey: ["users", { page, size }],
+    queryKey: userKeys.list({ page, size }),
     queryFn: () =>
       customFetcher<PaginatedPayload<User>>({
         url: "/users/",
@@ -32,15 +32,17 @@ export function useGetUsers(params: UseGetUsersParams = {}): UseGetUsersReturn {
       }),
   });
 
+  const pageData = normalizePage(query.data, { page, size });
+
   return {
-    users: query.data?.items ?? [],
-    total: query.data?.total ?? 0,
-    page: query.data?.page ?? page,
-    size: query.data?.size ?? size,
-    pages: query.data?.pages ?? 0,
+    users: pageData.items,
+    total: pageData.total,
+    page: pageData.page,
+    size: pageData.size,
+    pages: pageData.pages ?? 0,
     isLoading: query.isLoading,
     isError: query.isError,
-    error: query.error,
+    error: query.error ? toApiError(query.error) : null,
     refetch: query.refetch,
   };
 }

@@ -3,6 +3,19 @@ import { defineConfig } from "orval";
 
 config();
 
+/**
+ * orval is an **accelerator**, not the contract layer: the handwritten hooks in `data/feature/**`
+ * are what the component framework and the audit rely on, and they keep working in a fresh clone
+ * where the git-ignored `lib/api/` has not been generated yet.
+ *
+ * Known caveat (verified against the live backend): every endpoint's documented response is the
+ * `StandardResponse[T]` envelope, so orval types the generated callers as returning the
+ * *envelope* — while `customFetcher` unwraps it at runtime and returns `payload` (see
+ * `lib/fetcher.ts`). Types therefore describe the wire format rather than the runtime value. If
+ * generated hooks ever become the primary layer, add an `output.override.transformer` that strips
+ * the envelope from each response schema so the generated types match what the mutator returns.
+ */
+
 const openapiUrl = process.env.OPENAPI_JSON_URL;
 
 if (!openapiUrl) {

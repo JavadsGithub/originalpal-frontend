@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // orval output (`pnpm api:generate`) — generated code, git-ignored, not ours to lint.
+    "lib/api/**",
   ]),
 ]);
 

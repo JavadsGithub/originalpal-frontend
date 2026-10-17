@@ -1,9 +1,18 @@
 "use client";
 
 import { Permissions, type PermissionId } from "@/lib/permissions";
-import { setAccessToken } from "@/lib/fetcher";
+import { setAccessToken, subscribeToSession } from "@/lib/fetcher";
 import type { Role, User } from "@/lib/types/auth";
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { authKeys } from "@/data/query-keys";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import useGetCurrentUser from "@/data/feature/auth/useGetCurrentUser";
 import useLogin, { type LoginCredentials } from "@/data/feature/auth/useLogin";
 import useLogout from "@/data/feature/auth/useLogout";
@@ -25,31 +34,69 @@ export interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [authTokenPresent, setAuthTokenPresent] = useState<boolean>(true);
-  const { user, isLoading: isUserLoading, refetch: refreshUser } = useGetCurrentUser(authTokenPresent);
+  const queryClient = useQueryClient();
+
+  /**
+   * Whether the identity query should run at all.
+   *
+   * Starts `true` on purpose: the access token only lives in memory, so a fresh page load has no
+   * token but may still own a valid HttpOnly refresh cookie. The fetcher answers the resulting 401
+   * with one silent `POST /api/auth/refresh` and replays `GET /api/auth/me`, which restores the
+   * session without user interaction. After an explicit logout there is nothing to restore, so the
+   * query is disabled again.
+   */
+  const [shouldFetchIdentity, setShouldFetchIdentity] = useState(true);
+
+  const {
+    user,
+    isLoading: isUserLoading,
+    refetch: refreshUser,
+  } = useGetCurrentUser(shouldFetchIdentity);
 
   const loginMutation = useLogin();
   const logoutMutation = useLogout();
 
-  // Extract all permission IDs assigned to the user across all roles
+  // A refresh that fails means the refresh cookie is gone: drop the cached identity so guards
+  // redirect to /login instead of rendering a stale user.
+  useEffect(
+    () =>
+      subscribeToSession((event) => {
+        if (event.type === "session-expired" || event.type === "logged-out") {
+          queryClient.setQueryData(authKeys.me(), null);
+          void queryClient.cancelQueries({ queryKey: authKeys.all });
+        }
+
+        if (event.type === "logged-out") {
+          setShouldFetchIdentity(false);
+        }
+      }),
+    [queryClient],
+  );
+
   const userPermissionIds = useMemo(() => {
-    if (!user || !user.roles) return new Set<string>();
-    const permSet = new Set<string>();
+    const permissionIds = new Set<string>();
+    if (!user?.roles) return permissionIds;
+
     user.roles.forEach((role: Role) => {
-      role.permission_ids?.forEach((id) => permSet.add(id));
+      if (role.is_active === false) return;
+      role.permission_ids?.forEach((id) => permissionIds.add(id));
     });
-    return permSet;
+
+    return permissionIds;
   }, [user]);
 
-  const isSuperUser = useMemo(() => {
-    return userPermissionIds.has(Permissions.Super_User);
-  }, [userPermissionIds]);
+  const isSuperUser = useMemo(
+    () => userPermissionIds.has(Permissions.Super_User),
+    [userPermissionIds],
+  );
 
   const hasRole = useCallback(
     (roleName: string): boolean => {
       if (!user?.roles) return false;
       return user.roles.some(
-        (role) => role.name.toLowerCase() === roleName.toLowerCase() && role.is_active,
+        (role) =>
+          role.name.toLowerCase() === roleName.toLowerCase() &&
+          role.is_active !== false,
       );
     },
     [user],
@@ -85,8 +132,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(
     async (credentials: LoginCredentials) => {
       const result = await loginMutation.mutateAsync(credentials);
-      if (result.token) {
-        setAuthTokenPresent(true);
+      if (result?.token) {
+        setAccessToken(result.token);
+        setShouldFetchIdentity(true);
         await refreshUser();
       }
     },
@@ -94,9 +142,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await logoutMutation.mutateAsync();
-    setAccessToken(null);
-    setAuthTokenPresent(false);
+    try {
+      await logoutMutation.mutateAsync();
+    } finally {
+      setAccessToken(null);
+      setShouldFetchIdentity(false);
+    }
   }, [logoutMutation]);
 
   const value = useMemo<AuthContextType>(
