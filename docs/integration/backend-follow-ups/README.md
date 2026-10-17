@@ -115,7 +115,7 @@ origin needs a code change.
 
 ```diff
  # JWT Configuration
- SECRET_KEY=09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7
+ SECRET_KEY=<the backend's committed default — replace it, see the note below>
  ALGORITHM=HS256
  ACCESS_TOKEN_EXPIRE_MINUTES=30
 +
@@ -128,6 +128,12 @@ origin needs a code change.
 ```
 
 **Verify:** `curl -i -X OPTIONS $API/api/auth/login -H "Origin: $YOUR_ORIGIN" -H "Access-Control-Request-Method: POST"` → `200` + `access-control-allow-origin: $YOUR_ORIGIN`.
+
+> **The committed default key is the other half of this item.** `app/infra/core/config.py` ships a
+> literal `SECRET_KEY` default, so a deployment that forgets to set the variable signs every token with
+> a value that is public in the repository. The patch above only makes the *origins* configurable; the
+> key needs the same treatment, ideally with no default at all (fail to start when it is unset). While
+> it is committed, GitGuardian and every comparable scanner will flag the repository — correctly.
 
 ---
 
