@@ -182,7 +182,7 @@ jobs:
       - name: Screens (Playwright)
         run: |
           set -o pipefail
-          pnpm test:e2e 2>&1 | tee /tmp/e2e.log
+          PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/e2e.json pnpm test:e2e --reporter=list,json 2>&1 | tee /tmp/e2e.log
 
       - name: Report the browser failures on the pull request
         if: failure() && github.event_name == 'pull_request'
@@ -203,6 +203,12 @@ jobs:
             # Drop colour escapes, keep the last 400 lines: that is where the failed specs and their
             # assertions are, and a comment has a size limit.
             sed -e 's/\x1b\[[0-9;]*m//g' /tmp/e2e.log 2>/dev/null | tail -400 || echo 'no log captured'
+            echo '```'
+            echo
+            echo '### Every failure, one line each'
+            echo
+            echo '```'
+            node scripts/summarize-e2e.mjs /tmp/e2e.json 2>&1 | head -200 || echo 'no JSON report'
             echo '```'
             echo
             echo '<details><summary>Browser diagnostics</summary>'
