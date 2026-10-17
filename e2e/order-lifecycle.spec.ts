@@ -173,18 +173,23 @@ test.describe("cart, checkout and orders", () => {
       await expect(page.getByTestId("orders-table")).toContainText("€61.98");
 
       await page.goto(`/admin/orders/${orderId}`);
-      await expect(page.getByTestId("order-status-paid")).toBeVisible();
+      // Wait for the screen before asserting on it, and read the pill where it is defined: the order
+      // header. A hard load paints the route's loading state first, and until it settles the page can
+      // still hold the row it came from — the same pill, from the same component, on the list.
+      const view = page.getByTestId("order-view");
+      await expect(view).toBeVisible();
+      await expect(view.getByTestId("order-status-paid")).toBeVisible();
       await page.getByRole("button", { name: "Mark processing" }).click();
-      await expect(page.getByTestId("order-status-processing")).toBeVisible();
+      await expect(view.getByTestId("order-status-processing")).toBeVisible();
 
       await page.getByTestId("order-carrier").fill("E2E Post");
       await page.getByTestId("order-tracking").fill(`TRK-${SUFFIX}`);
       await page.getByRole("button", { name: "Mark shipped" }).click();
-      await expect(page.getByTestId("order-status-shipped")).toBeVisible();
+      await expect(view.getByTestId("order-status-shipped")).toBeVisible();
       await expect(page.getByTestId("order-messages")).toContainText("dispatch notice");
 
       await page.getByRole("button", { name: "Mark delivered" }).click();
-      await expect(page.getByTestId("order-status-delivered")).toBeVisible();
+      await expect(view.getByTestId("order-status-delivered")).toBeVisible();
       // Delivered is terminal: no cancel, and a refund needs a cancelled paid order.
       await expect(page.getByText("No action is available")).toBeVisible();
     } finally {
