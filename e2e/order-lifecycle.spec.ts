@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { signIn } from "./helpers";
 
 const ADMIN = {
   username: process.env.E2E_USERNAME ?? "admin",
@@ -122,7 +123,7 @@ test.describe("cart, checkout and orders", () => {
       await expect(page.getByTestId("add-to-cart")).toBeVisible();
       await page.getByTestId("add-to-cart").getByLabel("Quantity").fill("2");
       await page.getByRole("button", { name: "Add to cart" }).click();
-      await expect(page.getByTestId("add-to-cart-added")).toContainText("In your cart");
+      await expect(page.getByTestId("add-to-cart-added")).toContainText("In the cart");
 
       await page.goto("/cart");
       await expect(page.getByTestId(`cart-line-${SKU_CODE}`)).toContainText("2 × €25.99 = €51.98");
@@ -161,11 +162,7 @@ test.describe("cart, checkout and orders", () => {
       await expect(page.getByTestId("guest-cancel-unavailable")).toContainText("unpaid order");
 
       // The back office takes it from there.
-      await page.goto("/login");
-      await page.getByLabel("Username").fill(ADMIN.username);
-      await page.getByLabel("Password").fill(ADMIN.password);
-      await page.getByRole("button", { name: "Sign in" }).click();
-      await expect(page).toHaveURL(/\/admin$/);
+      await signIn(page);
 
       await page.goto("/admin/orders");
       await page.getByTestId("orders-search").fill(SKU_CODE);
@@ -242,10 +239,13 @@ test.describe("cart, checkout and orders", () => {
       const claimerId = (await register.json()).payload.id;
 
       try {
+        // The helper waits for the redirect. Navigating away before it lands would drop the session:
+        // the access token only lives in memory, so the lookup page would render signed-out.
         await page.goto("/login");
         await page.getByLabel("Username").fill(`e2e-claimer-${SUFFIX}`);
         await page.getByLabel("Password").fill("Secret123");
         await page.getByRole("button", { name: "Sign in" }).click();
+        await expect(page).toHaveURL(/\/admin$/);
 
         await page.goto("/orders/lookup");
         await page.getByTestId("lookup-order-id").fill(order.id);
@@ -255,8 +255,9 @@ test.describe("cart, checkout and orders", () => {
         // The backend has no outbound email yet, so the verification token is shown on screen.
         await expect(page.getByTestId("claim-verification")).toBeVisible();
         await page.getByRole("button", { name: "Confirm and add to my orders" }).click();
-        await expect(page.getByTestId("claim-verification")).toBeVisible();
 
+        // Confirming lands on the order inside the account area — the proof that it is claimed.
+        await expect(page).toHaveURL(new RegExp(`/account/orders/${order.id}$`));
         await page.goto("/account/orders");
         await expect(page.getByTestId("my-orders-list")).toContainText("€30.99");
 

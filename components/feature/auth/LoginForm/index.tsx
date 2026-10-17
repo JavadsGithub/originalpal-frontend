@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/form-error";
 import Link from "next/link";
 import React, { useState } from "react";
 
@@ -74,11 +75,9 @@ export default function LoginFormUI({
         </div>
       )}
 
-      {errorMessage && (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/50 dark:text-red-400">
-          {errorMessage}
-        </div>
-      )}
+      {/* `FormError` carries `role="alert"`, so the backend's refusal is announced rather than merely
+          drawn — the plain div this replaced was invisible to assistive technology. */}
+      <FormError message={errorMessage} className="mb-4" data-testid="login-error" />
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>

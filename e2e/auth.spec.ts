@@ -27,7 +27,10 @@ test.describe("authentication against the live backend", () => {
 
     await expect(page.getByRole("heading", { name: "Administration" })).toBeVisible();
     await expect(page.getByText("super:user")).toBeVisible();
-    await expect(page.getByRole("link", { name: "Users" })).toBeVisible();
+    // Scoped to the navigation: the overview page links to Users as well.
+    await expect(
+      page.getByRole("navigation", { name: "Administration" }).getByRole("link", { name: "Users" }),
+    ).toBeVisible();
   });
 
   test("a reload restores the session from the HttpOnly refresh cookie", async ({ page }) => {

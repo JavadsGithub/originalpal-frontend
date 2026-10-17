@@ -36,7 +36,10 @@ test.describe("user management", () => {
 
     // Assign the seeded Admin role — POST /api/users/{id}/roles/{roleId}.
     await row.getByRole("button", { name: "Roles" }).click();
-    await page.getByRole("checkbox", { name: "Admin role" }).check();
+    // The checkbox is controlled: it only flips once `POST /users/{id}/roles/{roleId}` answers, so this
+    // clicks and then waits for the assignment rather than using `.check()` (which expects the click
+    // itself to change the state).
+    await page.getByRole("checkbox", { name: "Admin role" }).click();
     await expect(page.getByRole("checkbox", { name: "Admin role" })).toBeChecked();
     await page.getByRole("button", { name: "Close" }).click();
 

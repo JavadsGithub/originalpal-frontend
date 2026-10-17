@@ -40,7 +40,11 @@ test.describe("catalog back office", () => {
     await page.getByRole("button", { name: "New product" }).click();
     await page.getByLabel("Title").fill(productTitle);
     await page.getByLabel("Slug").fill(productSlug);
-    await page.getByLabel("Category", { exact: true }).selectOption({ label: `E2E category ${slug}` });
+    // Scoped to the dialog: the list behind it has its own "Category" filter select.
+    await page
+      .getByRole("dialog")
+      .getByLabel("Category", { exact: true })
+      .selectOption({ label: `E2E category ${slug}` });
     await page.getByRole("button", { name: "Create product" }).click();
 
     const productRow = page.getByTestId(`product-row-${productSlug}`);

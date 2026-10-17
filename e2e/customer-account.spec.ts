@@ -109,8 +109,9 @@ test.describe("customer account", () => {
         "2 total",
       );
       await page.getByRole("button", { name: "Make default" }).first().click();
+      // `exact` matters: "Make default" buttons on the other cards also contain the word.
       await expect(
-        page.getByTestId("address-book").getByText("Default"),
+        page.getByTestId("address-book").getByText("Default", { exact: true }),
       ).toHaveCount(1);
     } finally {
       await deleteCustomer(request, username);
@@ -157,9 +158,9 @@ test.describe("customer account", () => {
       await page.getByLabel("Username").fill(username);
       await page.getByLabel("Password").fill("Secret123");
       await page.getByRole("button", { name: "Sign in" }).click();
-      await expect(page.getByRole("alert")).toContainText(
-        /validation|credentials/i,
-      );
+      // Scoped to the form's own alert: the App Router's route announcer also carries `role="alert"`,
+      // and it is always empty.
+      await expect(page.getByTestId("login-error")).toContainText(/validation|credentials/i);
     } finally {
       await deleteCustomer(request, username);
     }
