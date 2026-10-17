@@ -181,6 +181,7 @@ export default function CheckoutFormUI({
                 <input
                   type="radio"
                   id={`delivery-${option.method}`}
+                  data-testid={`delivery-${option.method}`}
                   name="delivery-method"
                   value={option.method}
                   checked={values.deliveryMethod === option.method}
