@@ -167,7 +167,9 @@ test.describe("cart, checkout and orders", () => {
       await signIn(page);
 
       await page.goto("/admin/orders");
-      await page.getByTestId("orders-search").fill(SKU_CODE);
+      // `?search=` covers the order id, the contact's name/email and the tracking reference — not the
+      // SKU code, so the shopper's email is what finds this run's order.
+      await page.getByTestId("orders-search").fill(`guest-${SUFFIX}@example.com`);
       await expect(page.getByTestId("orders-table")).toContainText("€61.98");
 
       await page.goto(`/admin/orders/${orderId}`);

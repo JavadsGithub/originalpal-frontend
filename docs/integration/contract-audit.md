@@ -600,6 +600,14 @@ payment attempt → provider callback → fulfilment → refund, plus the two ow
 number below is a response the frontend received, and `scripts/smoke-integration.mjs` §5f re-checks all of
 it (178 checks in total).
 
+### What `GET /api/orders/?search=` does and does not look at
+
+The filter is a `LIKE` over four columns — `id`, `contact_email`, `contact_name`, `tracking_reference`
+— so an operator can find an order by who placed it or by its parcel, but **not by what is in it**: a
+SKU code, a product title or an option value returns nothing. The back office therefore searches by
+contact or tracking, and the order row is opened to see its lines. Worth knowing before typing a
+product name into that box.
+
 ### The four permissions, and the two anonymous surfaces
 
 | Endpoint | Auth |
