@@ -95,10 +95,12 @@ jobs:
           git -C ../originalpal-server-python checkout --quiet "$BACKEND_REF"
           git -C ../originalpal-server-python log -1 --oneline
 
+      # No uv cache: the post-job cache save is the one step that can fail the job after every
+      # spec has passed, and a backup environment does not need it.
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-          enable-cache: true
+          enable-cache: false
 
       # SQLite keeps the job to one container; the backend supports it through `DATABASE_URL`, and
       # every contract the frontend relies on is the same code path. `aiosqlite` ships in the dev
